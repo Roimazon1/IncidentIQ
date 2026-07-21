@@ -98,7 +98,7 @@ Run only the application smoke tests:
 ## Current Status
 
 The application currently provides environment-backed settings, SQLAlchemy
-engine and session wiring, incident creation and editing, pasted-text evidence
-creation, a FastAPI dashboard, a health endpoint, local static assets, and
-automated tests. File upload, evidence preprocessing, and AI analysis belong to
-later tasks and are not implemented yet.
+engine and session wiring, incident creation and editing, pasted-text and
+multi-file evidence creation, a FastAPI dashboard, a health endpoint, local
+static assets, and automated tests. Upload validation, evidence preprocessing,
+and AI analysis belong to later tasks and are not implemented yet.
