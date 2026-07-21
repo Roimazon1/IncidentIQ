@@ -2,5 +2,6 @@ fastapi[standard]
 sqlalchemy
 pydantic
 pydantic-settings
+httpx2
 pytest
 ruff
