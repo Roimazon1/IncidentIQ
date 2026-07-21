@@ -45,6 +45,9 @@ def test_redaction_preview_masks_source_and_content_without_persisting_changes(
     assert "original evidence remains local and unchanged" in response.text
     assert "original normalized evidence" in response.text
     assert "displayed redacted text" in response.text
+    evidence_list_url = f"/incidents/{public_id}/evidence/new?tab=saved"
+    assert "Back to evidence list" in response.text
+    assert evidence_list_url in response.text
 
     with database_session_factory() as session:
         evidence = session.scalar(select(EvidenceItem))
@@ -164,3 +167,5 @@ def test_malformed_structured_evidence_returns_safe_validation_page(
     assert parser_detail not in response.text
     assert "contains invalid JSON" not in response.text
     assert "contains invalid CSV" not in response.text
+    assert "Back to evidence list" in response.text
+    assert f"/incidents/{public_id}/evidence/new?tab=saved" in response.text

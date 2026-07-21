@@ -210,7 +210,7 @@ def create_pasted_evidence(
     original_text: Annotated[str, Form()],
     evidence_type: Annotated[str, Form()] = EvidenceType.OTHER.value,
 ) -> Response:
-    """Validate and persist pasted text, then redirect to its incident."""
+    """Validate and persist pasted text, then show saved evidence."""
     service = IngestionService(session)
     values = {
         "source_name": source_name,
@@ -263,7 +263,7 @@ def create_pasted_evidence(
         )
 
     return RedirectResponse(
-        url=f"/incidents/{public_id}",
+        url=f"/incidents/{public_id}/evidence/new?tab=saved",
         status_code=status.HTTP_303_SEE_OTHER,
     )
 
@@ -279,7 +279,7 @@ def create_uploaded_evidence(
     files: Annotated[list[UploadFile], File()],
     evidence_type: Annotated[str, Form()] = EvidenceType.OTHER.value,
 ) -> Response:
-    """Validate and persist uploaded evidence, then redirect to the incident."""
+    """Validate and persist uploaded evidence, then show saved evidence."""
     values = {"upload_evidence_type": evidence_type}
     try:
         evidence_update = EvidenceUpdate(evidence_type=evidence_type)
@@ -335,7 +335,7 @@ def create_uploaded_evidence(
         )
 
     return RedirectResponse(
-        url=f"/incidents/{public_id}",
+        url=f"/incidents/{public_id}/evidence/new?tab=saved",
         status_code=status.HTTP_303_SEE_OTHER,
     )
 

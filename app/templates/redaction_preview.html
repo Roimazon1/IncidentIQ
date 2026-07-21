@@ -24,6 +24,12 @@
       </a>
       <a
         class="btn btn-outline-secondary"
+        href="{{ url_for('new_evidence_form', public_id=incident.public_id) }}?tab=saved"
+      >
+        Back to evidence list
+      </a>
+      <a
+        class="btn btn-outline-secondary"
         href="{{ url_for('incident_detail', public_id=incident.public_id) }}"
       >
         Incident details
