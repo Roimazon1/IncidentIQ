@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+
+{% block title %}{{ incident.public_id }} | {{ app_name }}{% endblock %}
+
+{% block content %}
+  <div class="row g-4">
+    <div class="col-lg-5">
+      <section class="card border-0 shadow-sm" aria-labelledby="incident-heading">
+        <div class="card-body p-4">
+          <div class="d-flex justify-content-between align-items-start gap-3 mb-3">
+            <div>
+              <div class="text-body-secondary small">{{ incident.public_id }}</div>
+              <h1 class="h3 mb-0" id="incident-heading">{{ incident.name }}</h1>
+            </div>
+            <span class="badge text-bg-secondary">{{ incident.status.value }}</span>
+          </div>
+          <dl class="mb-0">
+            <dt>Affected service</dt>
+            <dd>{{ incident.affected_service }}</dd>
+            <dt>Description</dt>
+            <dd class="text-break">{{ incident.description }}</dd>
+            <dt>Reported start time</dt>
+            <dd>
+              {% if incident.reported_start_time %}
+                <time datetime="{{ incident.reported_start_time.isoformat() }}">
+                  {{ incident.reported_start_time | incident_datetime }}
+                </time>
+              {% else %}
+                Not provided
+              {% endif %}
+            </dd>
+            <dt>Created</dt>
+            <dd class="mb-0">
+              <time datetime="{{ incident.created_at.isoformat() }}">
+                {{ incident.created_at | incident_datetime }}
+              </time>
+            </dd>
+          </dl>
+          <a
+            class="btn btn-outline-primary mt-4"
+            href="{{ url_for('new_evidence_form', public_id=incident.public_id) }}"
+          >
+            Add evidence
+          </a>
+        </div>
+      </section>
+    </div>
+
+    <div class="col-lg-7">
+      <section class="card border-0 shadow-sm" aria-labelledby="edit-heading">
+        <div class="card-body p-4">
+          <h2 class="h4" id="edit-heading">Edit incident metadata</h2>
+
+          {% if errors %}
+            <div class="alert alert-danger" role="alert">
+              <ul class="mb-0">
+                {% for error in errors %}
+                  <li>{{ error }}</li>
+                {% endfor %}
+              </ul>
+            </div>
+          {% endif %}
+
+          <form method="post" action="{{ url_for('update_incident', public_id=incident.public_id) }}">
+            {% include "partials/incident_fields.html" %}
+            <button class="btn btn-primary" type="submit">Save changes</button>
+          </form>
+        </div>
+      </section>
+    </div>
+  </div>
+{% endblock %}

@@ -55,6 +55,9 @@ Copy-Item .env.example .env
 
 The default `AI_PROVIDER=fake` setting does not require an OpenAI API key. Keep
 real API keys only in the ignored `.env` file; never add them to `.env.example`.
+Set `DISPLAY_TIMEZONE` to an IANA timezone name such as `UTC` or
+`Asia/Jerusalem` to control how incident timestamps are displayed. Stored values
+and HTML `datetime` attributes remain ISO timestamps.
 
 ## Initialize the Database
 
@@ -97,7 +100,10 @@ Run only the application smoke tests:
 
 ## Current Status
 
-The Phase 1 scaffold currently provides environment-backed settings, SQLAlchemy
-engine and session wiring, a FastAPI dashboard, a health endpoint, local static
-assets, and smoke tests. Incident creation, evidence ingestion, and AI analysis
-belong to later phases and are not implemented yet.
+The application currently provides environment-backed settings, SQLAlchemy
+engine and session wiring, incident creation and editing, pasted-text and
+multi-file evidence creation, a FastAPI dashboard, a health endpoint, local
+static assets, upload validation, evidence-type selection and correction, and
+saved original-evidence previews. The dashboard lists saved incidents with their
+current status. Automated tests cover the current behavior. Evidence
+preprocessing and AI analysis belong to later tasks and are not implemented yet.

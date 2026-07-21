@@ -1,0 +1,49 @@
+<div class="mb-3">
+  <label class="form-label" for="name">Incident title</label>
+  <input
+    class="form-control"
+    id="name"
+    name="name"
+    value="{{ values.get('name', '') }}"
+    maxlength="{{ INCIDENT_NAME_MAX_LENGTH }}"
+    required
+  >
+</div>
+<div class="mb-3">
+  <label class="form-label" for="description">Short description</label>
+  <textarea
+    class="form-control"
+    id="description"
+    name="description"
+    rows="5"
+    required
+  >{{ values.get('description', '') }}</textarea>
+</div>
+<div class="mb-3">
+  <label class="form-label" for="affected_service">Affected service</label>
+  <input
+    class="form-control"
+    id="affected_service"
+    name="affected_service"
+    value="{{ values.get('affected_service', '') }}"
+    maxlength="{{ AFFECTED_SERVICE_MAX_LENGTH }}"
+    required
+  >
+</div>
+<div class="mb-4">
+  <label class="form-label" for="reported_start_time">
+    Approximate start time
+  </label>
+  <input
+    class="form-control"
+    id="reported_start_time"
+    name="reported_start_time"
+    type="datetime-local"
+    value="{{ values.get('reported_start_time', '') }}"
+    step="60"
+    aria-describedby="reported-start-help"
+  >
+  <div class="form-text" id="reported-start-help">
+    Optional. Enter the time in {{ display_timezone }}; it is stored in UTC.
+  </div>
+</div>

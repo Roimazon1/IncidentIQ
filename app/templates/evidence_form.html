@@ -1,0 +1,276 @@
+{% extends "base.html" %}
+
+{% macro evidence_type_options(evidence_types, selected_type) %}
+  {% for evidence_type in evidence_types %}
+    <option
+      value="{{ evidence_type.value }}"
+      {% if evidence_type.value == selected_type %}selected{% endif %}
+    >
+      {{ evidence_type.value.replace('_', ' ').title() }}
+    </option>
+  {% endfor %}
+{% endmacro %}
+
+{% block title %}Add evidence | {{ incident.public_id }} | {{ app_name }}{% endblock %}
+
+{% block content %}
+  <div class="row justify-content-center">
+    <div class="col-lg-9">
+      <div class="d-flex align-items-center justify-content-between mb-4">
+        <div>
+          <div class="text-body-secondary small">{{ incident.public_id }}</div>
+          <h1 class="h2 mb-1">Add evidence</h1>
+          <p class="text-body-secondary mb-0">{{ incident.name }}</p>
+        </div>
+        <a
+          class="btn btn-outline-secondary"
+          href="{{ url_for('incident_detail', public_id=incident.public_id) }}"
+        >
+          Cancel
+        </a>
+      </div>
+
+      {% if errors %}
+        <div class="alert alert-danger" role="alert">
+          <h2 class="h6">Please correct the following:</h2>
+          <ul class="mb-0">
+            {% for error in errors %}
+              <li>{{ error }}</li>
+            {% endfor %}
+          </ul>
+        </div>
+      {% endif %}
+
+      <ul class="nav nav-tabs" id="evidence-tabs" role="tablist">
+        <li class="nav-item" role="presentation">
+          <button
+            class="nav-link{% if active_tab == 'paste' %} active{% endif %}"
+            id="paste-tab"
+            data-bs-toggle="tab"
+            data-bs-target="#paste-pane"
+            type="button"
+            role="tab"
+            aria-controls="paste-pane"
+            aria-selected="{{ 'true' if active_tab == 'paste' else 'false' }}"
+          >
+            Paste text
+          </button>
+        </li>
+        <li class="nav-item" role="presentation">
+          <button
+            class="nav-link{% if active_tab == 'upload' %} active{% endif %}"
+            id="upload-tab"
+            data-bs-toggle="tab"
+            data-bs-target="#upload-pane"
+            type="button"
+            role="tab"
+            aria-controls="upload-pane"
+            aria-selected="{{ 'true' if active_tab == 'upload' else 'false' }}"
+          >
+            Upload files
+          </button>
+        </li>
+        <li class="nav-item" role="presentation">
+          <button
+            class="nav-link{% if active_tab == 'saved' %} active{% endif %}"
+            id="saved-tab"
+            data-bs-toggle="tab"
+            data-bs-target="#saved-pane"
+            type="button"
+            role="tab"
+            aria-controls="saved-pane"
+            aria-selected="{{ 'true' if active_tab == 'saved' else 'false' }}"
+          >
+            Saved evidence
+          </button>
+        </li>
+      </ul>
+
+      <div class="tab-content" id="evidence-tab-content">
+        <div
+          class="tab-pane fade{% if active_tab == 'paste' %} show active{% endif %}"
+          id="paste-pane"
+          role="tabpanel"
+          aria-labelledby="paste-tab"
+          tabindex="0"
+        >
+          <form
+            method="post"
+            action="{{ url_for('create_pasted_evidence', public_id=incident.public_id) }}"
+            class="card border-0 shadow-sm"
+          >
+            <div class="card-body p-4">
+              <h2 class="h4">Paste text</h2>
+              <div class="mb-3">
+                <label class="form-label" for="pasted_evidence_type">Evidence type</label>
+                <select
+                  class="form-select"
+                  id="pasted_evidence_type"
+                  name="evidence_type"
+                  required
+                >
+                  {{ evidence_type_options(
+                    evidence_types,
+                    values.get('pasted_evidence_type', 'OTHER')
+                  ) }}
+                </select>
+              </div>
+              <div class="mb-3">
+                <label class="form-label" for="source_name">Source label</label>
+                <input
+                  class="form-control"
+                  id="source_name"
+                  name="source_name"
+                  value="{{ values.get('source_name', '') }}"
+                  maxlength="{{ SOURCE_NAME_MAX_LENGTH }}"
+                  required
+                >
+              </div>
+              <div class="mb-4">
+                <label class="form-label" for="original_text">Evidence text</label>
+                <textarea
+                  class="form-control font-monospace"
+                  id="original_text"
+                  name="original_text"
+                  rows="14"
+                  required
+                >{{ values.get('original_text', '') }}</textarea>
+                <div class="form-text">
+                  The original text is preserved exactly for traceability.
+                </div>
+              </div>
+              <button class="btn btn-primary" type="submit">Save pasted evidence</button>
+            </div>
+          </form>
+        </div>
+
+        <div
+          class="tab-pane fade{% if active_tab == 'upload' %} show active{% endif %}"
+          id="upload-pane"
+          role="tabpanel"
+          aria-labelledby="upload-tab"
+          tabindex="0"
+        >
+          <form
+            method="post"
+            action="{{ url_for('create_uploaded_evidence', public_id=incident.public_id) }}"
+            enctype="multipart/form-data"
+            class="card border-0 shadow-sm"
+          >
+            <div class="card-body p-4">
+              <h2 class="h4">Upload evidence files</h2>
+              <div class="mb-3">
+                <label class="form-label" for="upload_evidence_type">Evidence type</label>
+                <select
+                  class="form-select"
+                  id="upload_evidence_type"
+                  name="evidence_type"
+                  required
+                >
+                  {{ evidence_type_options(
+                    evidence_types,
+                    values.get('upload_evidence_type', 'OTHER')
+                  ) }}
+                </select>
+                <div class="form-text">
+                  The selected type applies to every file in this batch.
+                </div>
+              </div>
+              <div class="mb-4">
+                <label class="form-label" for="files">Choose one or more files</label>
+                <input
+                  class="form-control"
+                  id="files"
+                  name="files"
+                  type="file"
+                  accept="{{ upload_accept }}"
+                  multiple
+                  required
+                >
+                <div class="form-text">
+                  Supported formats: {{ upload_formats_text }}.
+                </div>
+              </div>
+              <button class="btn btn-primary" type="submit">Upload evidence</button>
+            </div>
+          </form>
+        </div>
+
+        <div
+          class="tab-pane fade{% if active_tab == 'saved' %} show active{% endif %}"
+          id="saved-pane"
+          role="tabpanel"
+          aria-labelledby="saved-tab"
+          tabindex="0"
+        >
+          <section class="card border-0 shadow-sm" aria-labelledby="saved-heading">
+            <div class="card-body p-4">
+              <h2 class="h4" id="saved-heading">Saved evidence</h2>
+              {% if evidence_items %}
+                <p class="text-body-secondary">
+                  Correct saved classifications without altering the original content.
+                </p>
+                <div class="vstack gap-3">
+                  {% for evidence in evidence_items %}
+                    <form
+                      method="post"
+                      action="{{ url_for(
+                        'update_evidence_type',
+                        public_id=incident.public_id,
+                        evidence_code=evidence.evidence_code
+                      ) }}"
+                      class="row g-2 align-items-end"
+                    >
+                      <div class="col-md-5">
+                        <div class="fw-semibold">
+                          <a
+                            href="{{ url_for(
+                              'evidence_preview',
+                              public_id=incident.public_id,
+                              evidence_code=evidence.evidence_code
+                            ) }}"
+                          >
+                            <code>{{ evidence.evidence_code }}</code>
+                          </a>
+                          {{ evidence.source_name }}
+                        </div>
+                      </div>
+                      <div class="col-md-5">
+                        <label
+                          class="form-label"
+                          for="evidence_type_{{ evidence.id }}"
+                        >
+                          Evidence type
+                        </label>
+                        <select
+                          class="form-select"
+                          id="evidence_type_{{ evidence.id }}"
+                          name="evidence_type"
+                          required
+                        >
+                          {{ evidence_type_options(
+                            evidence_types,
+                            evidence.evidence_type.value
+                          ) }}
+                        </select>
+                      </div>
+                      <div class="col-md-2">
+                        <button class="btn btn-outline-primary w-100" type="submit">
+                          Update type
+                        </button>
+                      </div>
+                    </form>
+                  {% endfor %}
+                </div>
+              {% else %}
+                <p class="text-body-secondary mb-0">
+                  No evidence has been saved for this incident yet.
+                </p>
+              {% endif %}
+            </div>
+          </section>
+        </div>
+      </div>
+    </div>
+  </div>
+{% endblock %}

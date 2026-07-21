@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+
+{% block title %}New incident | {{ app_name }}{% endblock %}
+
+{% block content %}
+  <div class="row justify-content-center">
+    <div class="col-lg-8">
+      <div class="d-flex align-items-center justify-content-between mb-4">
+        <div>
+          <h1 class="h2 mb-1">Create incident</h1>
+          <p class="text-body-secondary mb-0">
+            Record the known incident metadata before collecting evidence.
+          </p>
+        </div>
+        <a class="btn btn-outline-secondary" href="{{ url_for('dashboard') }}">
+          Cancel
+        </a>
+      </div>
+
+      {% if errors %}
+        <div class="alert alert-danger" role="alert">
+          <h2 class="h6">Please correct the following:</h2>
+          <ul class="mb-0">
+            {% for error in errors %}
+              <li>{{ error }}</li>
+            {% endfor %}
+          </ul>
+        </div>
+      {% endif %}
+
+      <form method="post" action="{{ url_for('create_incident') }}" class="card border-0 shadow-sm">
+        <div class="card-body p-4">
+          {% include "partials/incident_fields.html" %}
+          <button class="btn btn-primary" type="submit">Create incident</button>
+        </div>
+      </form>
+    </div>
+  </div>
+{% endblock %}

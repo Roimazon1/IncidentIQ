@@ -1,16 +1,15 @@
 """FastAPI application entry point."""
 
-from pathlib import Path
-
-from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
 
 from app.config import get_settings
+from app.routers.dashboard import router as dashboard_router
+from app.routers.evidence import router as evidence_router
+from app.routers.incidents import router as incidents_router
+from app.templating import APP_DIRECTORY
 
 
-APP_DIRECTORY = Path(__file__).resolve().parent
 settings = get_settings()
 
 app = FastAPI(title=settings.app_name, debug=settings.debug)
@@ -19,18 +18,9 @@ app.mount(
     StaticFiles(directory=APP_DIRECTORY / "static"),
     name="static",
 )
-templates = Jinja2Templates(directory=APP_DIRECTORY / "templates")
-
-
-@app.get("/", response_class=HTMLResponse)
-def dashboard(request: Request) -> HTMLResponse:
-    """Render the application dashboard."""
-
-    return templates.TemplateResponse(
-        request=request,
-        name="dashboard.html",
-        context={"app_name": settings.app_name},
-    )
+app.include_router(dashboard_router)
+app.include_router(incidents_router)
+app.include_router(evidence_router)
 
 
 @app.get("/health")
