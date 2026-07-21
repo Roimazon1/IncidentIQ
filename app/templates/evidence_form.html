@@ -1,5 +1,16 @@
 {% extends "base.html" %}
 
+{% macro evidence_type_options(evidence_types, selected_type) %}
+  {% for evidence_type in evidence_types %}
+    <option
+      value="{{ evidence_type.value }}"
+      {% if evidence_type.value == selected_type %}selected{% endif %}
+    >
+      {{ evidence_type.value.replace('_', ' ').title() }}
+    </option>
+  {% endfor %}
+{% endmacro %}
+
 {% block title %}Add evidence | {{ incident.public_id }} | {{ app_name }}{% endblock %}
 
 {% block content %}
@@ -38,6 +49,20 @@
         <div class="card-body p-4">
           <h2 class="h4">Paste text</h2>
           <div class="mb-3">
+            <label class="form-label" for="pasted_evidence_type">Evidence type</label>
+            <select
+              class="form-select"
+              id="pasted_evidence_type"
+              name="evidence_type"
+              required
+            >
+              {{ evidence_type_options(
+                evidence_types,
+                values.get('pasted_evidence_type', 'OTHER')
+              ) }}
+            </select>
+          </div>
+          <div class="mb-3">
             <label class="form-label" for="source_name">Source label</label>
             <input
               class="form-control"
@@ -73,6 +98,21 @@
       >
         <div class="card-body p-4">
           <h2 class="h4">Upload evidence files</h2>
+          <div class="mb-3">
+            <label class="form-label" for="upload_evidence_type">Evidence type</label>
+            <select
+              class="form-select"
+              id="upload_evidence_type"
+              name="evidence_type"
+              required
+            >
+              {{ evidence_type_options(
+                evidence_types,
+                values.get('upload_evidence_type', 'OTHER')
+              ) }}
+            </select>
+            <div class="form-text">The selected type applies to every file in this batch.</div>
+          </div>
           <div class="mb-4">
             <label class="form-label" for="files">Choose one or more files</label>
             <input
@@ -91,6 +131,61 @@
           <button class="btn btn-primary" type="submit">Upload evidence</button>
         </div>
       </form>
+
+      {% if evidence_items %}
+        <section class="card border-0 shadow-sm mt-4" aria-labelledby="classifications-heading">
+          <div class="card-body p-4">
+            <h2 class="h4" id="classifications-heading">Correct saved classifications</h2>
+            <p class="text-body-secondary">
+              Change a human-assigned evidence type without altering the original content.
+            </p>
+            <div class="vstack gap-3">
+              {% for evidence in evidence_items %}
+                <form
+                  method="post"
+                  action="{{ url_for(
+                    'update_evidence_type',
+                    public_id=incident.public_id,
+                    evidence_code=evidence.evidence_code
+                  ) }}"
+                  class="row g-2 align-items-end"
+                >
+                  <div class="col-md-5">
+                    <div class="fw-semibold">
+                      <code>{{ evidence.evidence_code }}</code>
+                      {{ evidence.source_name }}
+                    </div>
+                  </div>
+                  <div class="col-md-5">
+                    <label
+                      class="form-label"
+                      for="evidence_type_{{ evidence.id }}"
+                    >
+                      Evidence type
+                    </label>
+                    <select
+                      class="form-select"
+                      id="evidence_type_{{ evidence.id }}"
+                      name="evidence_type"
+                      required
+                    >
+                      {{ evidence_type_options(
+                        evidence_types,
+                        evidence.evidence_type.value
+                      ) }}
+                    </select>
+                  </div>
+                  <div class="col-md-2">
+                    <button class="btn btn-outline-primary w-100" type="submit">
+                      Update type
+                    </button>
+                  </div>
+                </form>
+              {% endfor %}
+            </div>
+          </div>
+        </section>
+      {% endif %}
     </div>
   </div>
 {% endblock %}

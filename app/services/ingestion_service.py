@@ -8,13 +8,13 @@ from pathlib import PurePath
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 
 from app.config import get_settings
 from app.models import EvidenceItem, EvidenceType, Incident
 from app.models.evidence import SOURCE_NAME_MAX_LENGTH
 from app.models.identifiers import EVIDENCE_CODE_PREFIX, generate_evidence_code
-from app.schemas.evidence import EvidenceCreate
+from app.schemas.evidence import EvidenceCreate, EvidenceUpdate
 from app.services.incident_service import IncidentService
 
 
@@ -24,6 +24,10 @@ class EvidencePersistenceError(RuntimeError):
 
 class EvidenceUploadValidationError(ValueError):
     """Raised when an uploaded file is unsafe or unsupported."""
+
+
+class EvidenceItemNotFoundError(LookupError):
+    """Raised when an evidence code does not belong to an incident."""
 
 
 SUPPORTED_UPLOAD_EXTENSIONS = (".txt", ".log", ".json", ".csv", ".md")
@@ -36,6 +40,7 @@ class EvidenceUpload:
 
     filename: str
     content: bytes
+    evidence_type: EvidenceType = EvidenceType.OTHER
 
 
 class IngestionService:
@@ -99,6 +104,67 @@ class IngestionService:
             failure_message="The uploaded evidence could not be saved.",
         )
 
+    def list_evidence_metadata(self, incident_id: int) -> list[EvidenceItem]:
+        """Return saved evidence identifiers and editable metadata only."""
+        statement = (
+            select(EvidenceItem)
+            .options(
+                load_only(
+                    EvidenceItem.id,
+                    EvidenceItem.incident_id,
+                    EvidenceItem.evidence_code,
+                    EvidenceItem.source_name,
+                    EvidenceItem.evidence_type,
+                )
+            )
+            .where(EvidenceItem.incident_id == incident_id)
+            .order_by(EvidenceItem.id)
+        )
+        return list(self.session.scalars(statement))
+
+    def update_evidence_metadata(
+        self,
+        incident_public_id: str,
+        evidence_code: str,
+        evidence_data: EvidenceUpdate,
+    ) -> EvidenceItem:
+        """Persist user-correctable metadata for one incident evidence item."""
+        evidence = self.session.scalar(
+            select(EvidenceItem)
+            .join(Incident)
+            .options(
+                load_only(
+                    EvidenceItem.id,
+                    EvidenceItem.incident_id,
+                    EvidenceItem.evidence_code,
+                    EvidenceItem.source_name,
+                    EvidenceItem.evidence_type,
+                )
+            )
+            .where(
+                Incident.public_id == incident_public_id,
+                EvidenceItem.evidence_code == evidence_code,
+            )
+        )
+        if evidence is None:
+            raise EvidenceItemNotFoundError(
+                f"Evidence {evidence_code} was not found for incident "
+                f"{incident_public_id}."
+            )
+
+        for field_name, value in evidence_data.model_dump(
+            exclude_unset=True
+        ).items():
+            setattr(evidence, field_name, value)
+        try:
+            self.session.commit()
+        except SQLAlchemyError as exc:
+            self.session.rollback()
+            raise EvidencePersistenceError(
+                f"Evidence {evidence_code} could not be updated."
+            ) from exc
+        return evidence
+
     @staticmethod
     def sanitize_filename(filename: str) -> str:
         """Return a storage-safe basename for an uploaded source label."""
@@ -160,7 +226,7 @@ class IngestionService:
         self.validate_size(sanitized, upload.content)
         return EvidenceCreate(
             source_name=sanitized,
-            evidence_type=EvidenceType.OTHER,
+            evidence_type=upload.evidence_type,
             original_text=self.decode_text(sanitized, upload.content),
         )
 

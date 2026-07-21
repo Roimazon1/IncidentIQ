@@ -20,10 +20,11 @@ from app.config import get_settings
 from app.database import get_db
 from app.models import EvidenceType, Incident
 from app.routers.validation import validation_messages
-from app.schemas.evidence import EvidenceCreate
+from app.schemas.evidence import EvidenceCreate, EvidenceUpdate
 from app.services.incident_service import IncidentNotFoundError, IncidentService
 from app.services.ingestion_service import (
     SUPPORTED_UPLOAD_EXTENSIONS,
+    EvidenceItemNotFoundError,
     EvidencePersistenceError,
     EvidenceUpload,
     EvidenceUploadValidationError,
@@ -43,16 +44,28 @@ UPLOAD_FORMATS_TEXT = (
 
 
 def _evidence_form_context(
+    session: Session,
     incident: Incident,
     *,
     errors: list[str],
-    values: dict[str, str],
+    values: dict[str, str] | None = None,
 ) -> dict[str, object]:
+    form_values = {
+        "source_name": "Pasted text",
+        "pasted_evidence_type": EvidenceType.OTHER.value,
+        "upload_evidence_type": EvidenceType.OTHER.value,
+    }
+    if values is not None:
+        form_values.update(values)
     return {
         "app_name": settings.app_name,
         "incident": incident,
+        "evidence_items": IngestionService(session).list_evidence_metadata(
+            incident.id
+        ),
+        "evidence_types": list(EvidenceType),
         "errors": errors,
-        "values": values,
+        "values": form_values,
         "upload_accept": UPLOAD_ACCEPT,
         "upload_formats_text": UPLOAD_FORMATS_TEXT,
     }
@@ -80,9 +93,9 @@ def new_evidence_form(
         request=request,
         name="evidence_form.html",
         context=_evidence_form_context(
+            session,
             incident,
             errors=[],
-            values={"source_name": "Pasted text"},
         ),
     )
 
@@ -97,14 +110,19 @@ def create_pasted_evidence(
     session: DatabaseSession,
     source_name: Annotated[str, Form()],
     original_text: Annotated[str, Form()],
+    evidence_type: Annotated[str, Form()] = EvidenceType.OTHER.value,
 ) -> Response:
     """Validate and persist pasted text, then redirect to its incident."""
     service = IngestionService(session)
-    values = {"source_name": source_name, "original_text": original_text}
+    values = {
+        "source_name": source_name,
+        "original_text": original_text,
+        "pasted_evidence_type": evidence_type,
+    }
     try:
         evidence_data = EvidenceCreate(
             source_name=source_name,
-            evidence_type=EvidenceType.OTHER,
+            evidence_type=evidence_type,
             original_text=original_text,
         )
         service.ingest_pasted_text(public_id, evidence_data)
@@ -125,6 +143,7 @@ def create_pasted_evidence(
             request=request,
             name="evidence_form.html",
             context=_evidence_form_context(
+                session,
                 incident,
                 errors=validation_messages(exc),
                 values=values,
@@ -137,6 +156,7 @@ def create_pasted_evidence(
             request=request,
             name="evidence_form.html",
             context=_evidence_form_context(
+                session,
                 incident,
                 errors=[str(exc)],
                 values=values,
@@ -159,16 +179,20 @@ def create_uploaded_evidence(
     public_id: str,
     session: DatabaseSession,
     files: Annotated[list[UploadFile], File()],
+    evidence_type: Annotated[str, Form()] = EvidenceType.OTHER.value,
 ) -> Response:
     """Validate and persist uploaded evidence, then redirect to the incident."""
-    uploads = [
-        EvidenceUpload(
-            filename=uploaded_file.filename or "",
-            content=uploaded_file.file.read(settings.max_upload_bytes + 1),
-        )
-        for uploaded_file in files
-    ]
+    values = {"upload_evidence_type": evidence_type}
     try:
+        evidence_update = EvidenceUpdate(evidence_type=evidence_type)
+        uploads = [
+            EvidenceUpload(
+                filename=uploaded_file.filename or "",
+                content=uploaded_file.file.read(settings.max_upload_bytes + 1),
+                evidence_type=evidence_update.evidence_type,
+            )
+            for uploaded_file in files
+        ]
         IngestionService(
             session,
             max_upload_bytes=settings.max_upload_bytes,
@@ -189,9 +213,10 @@ def create_uploaded_evidence(
             request=request,
             name="evidence_form.html",
             context=_evidence_form_context(
+                session,
                 incident,
                 errors=errors,
-                values={"source_name": "Pasted text"},
+                values=values,
             ),
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         )
@@ -201,14 +226,76 @@ def create_uploaded_evidence(
             request=request,
             name="evidence_form.html",
             context=_evidence_form_context(
+                session,
                 incident,
                 errors=[str(exc)],
-                values={"source_name": "Pasted text"},
+                values=values,
             ),
             status_code=status.HTTP_409_CONFLICT,
         )
 
     return RedirectResponse(
         url=f"/incidents/{public_id}",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@router.post(
+    "/incidents/{public_id}/evidence/{evidence_code}/type",
+    response_class=HTMLResponse,
+)
+def update_evidence_type(
+    request: Request,
+    public_id: str,
+    evidence_code: str,
+    session: DatabaseSession,
+    evidence_type: Annotated[str, Form()],
+) -> Response:
+    """Validate and persist a human correction to an evidence classification."""
+    try:
+        evidence_data = EvidenceUpdate(evidence_type=evidence_type)
+        IngestionService(session).update_evidence_metadata(
+            public_id,
+            evidence_code,
+            evidence_data,
+        )
+    except EvidenceItemNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except ValidationError as exc:
+        try:
+            incident = IncidentService(session).get_incident_or_raise(public_id)
+        except IncidentNotFoundError as missing_exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=str(missing_exc),
+            ) from missing_exc
+        return templates.TemplateResponse(
+            request=request,
+            name="evidence_form.html",
+            context=_evidence_form_context(
+                session,
+                incident,
+                errors=validation_messages(exc),
+            ),
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        )
+    except EvidencePersistenceError as exc:
+        incident = IncidentService(session).get_incident_or_raise(public_id)
+        return templates.TemplateResponse(
+            request=request,
+            name="evidence_form.html",
+            context=_evidence_form_context(
+                session,
+                incident,
+                errors=[str(exc)],
+            ),
+            status_code=status.HTTP_409_CONFLICT,
+        )
+
+    return RedirectResponse(
+        url=f"/incidents/{public_id}/evidence/new",
         status_code=status.HTTP_303_SEE_OTHER,
     )
