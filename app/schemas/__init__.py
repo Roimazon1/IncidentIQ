@@ -7,8 +7,10 @@ from app.schemas.evidence import (
     EvidenceManifestItem,
     EvidenceManifestSource,
     EvidenceManifestTimestamp,
+    EvidenceRedactionPreview,
     EvidenceRead,
     EvidenceUpdate,
+    RedactionPreviewFinding,
 )
 from app.schemas.incident import IncidentCreate, IncidentRead, IncidentUpdate
 
@@ -19,9 +21,11 @@ __all__ = [
     "EvidenceManifestItem",
     "EvidenceManifestSource",
     "EvidenceManifestTimestamp",
+    "EvidenceRedactionPreview",
     "EvidenceRead",
     "EvidenceUpdate",
     "IncidentCreate",
     "IncidentRead",
     "IncidentUpdate",
+    "RedactionPreviewFinding",
 ]

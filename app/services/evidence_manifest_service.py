@@ -8,13 +8,20 @@ from app.schemas.evidence import (
     EvidenceManifestItem,
     EvidenceManifestSource,
     EvidenceManifestTimestamp,
+    EvidenceRedactionPreview,
+    RedactionPreviewFinding,
 )
 from app.services.preprocessing_service import (
     DEFAULT_CHUNK_MAX_CHARACTERS,
     DEFAULT_CHUNK_MAX_LINES,
     PreprocessingService,
+    StructuredTextError,
 )
-from app.services.redaction_service import RedactionService
+from app.services.redaction_service import RedactionResult, RedactionService
+
+
+class EvidencePreviewValidationError(ValueError):
+    """Raised when saved structured evidence cannot produce a safe preview."""
 
 
 class EvidenceManifestService:
@@ -54,6 +61,43 @@ class EvidenceManifestService:
             evidence=manifest_items,
         )
 
+    @classmethod
+    def build_redaction_preview(
+        cls,
+        source: EvidenceManifestSource,
+    ) -> EvidenceRedactionPreview:
+        """Build a safe preview matching the manifest redaction pipeline."""
+        try:
+            _, source_redaction, content_redaction = cls._prepare_redactions(source)
+        except StructuredTextError as exc:
+            raise EvidencePreviewValidationError(
+                "The saved structured evidence is malformed and cannot be prepared "
+                "for redaction preview. Correct or replace it before external AI use."
+            ) from exc
+        findings = tuple(
+            RedactionPreviewFinding(
+                location=location,
+                category=detection.category.value,
+                line_number=detection.line_number,
+                column_number=detection.column_number,
+                replacement=detection.replacement,
+            )
+            for location, result in (
+                ("source_name", source_redaction),
+                ("content", content_redaction),
+            )
+            for detection in result.detections
+        )
+        return EvidenceRedactionPreview(
+            evidence_code=source.evidence_code,
+            evidence_type=source.evidence_type,
+            source_name=source_redaction.redacted_text,
+            redacted_content=PreprocessingService.add_line_numbers(
+                content_redaction.redacted_text
+            ),
+            findings=findings,
+        )
+
     @staticmethod
     def _build_manifest_item(
         source: EvidenceManifestSource,
@@ -61,9 +105,8 @@ class EvidenceManifestService:
         max_chunk_characters: int,
         max_chunk_lines: int,
     ) -> EvidenceManifestItem:
-        normalized = PreprocessingService.normalize_by_source(
-            source.original_text,
-            source.source_name,
+        normalized, source_redaction, content_redaction = (
+            EvidenceManifestService._prepare_redactions(source)
         )
         source_range = PreprocessingService.get_source_range(normalized)
         if source_range is None:
@@ -80,22 +123,19 @@ class EvidenceManifestService:
             )
             for timestamp in PreprocessingService.extract_timestamps(normalized)
         )
-        redacted_text = RedactionService.redact_text(normalized).redacted_text
-        numbered_redacted_text = PreprocessingService.add_line_numbers(redacted_text)
+        numbered_redacted_text = PreprocessingService.add_line_numbers(
+            content_redaction.redacted_text
+        )
         chunks = PreprocessingService.split_into_chunks(
             numbered_redacted_text,
             evidence_id=source.evidence_code,
             max_characters=max_chunk_characters,
             max_lines=max_chunk_lines,
         )
-        redacted_source_name = RedactionService.redact_text(
-            source.source_name
-        ).redacted_text
-
         return EvidenceManifestItem(
             id=source.evidence_code,
             type=source.evidence_type,
-            source=redacted_source_name,
+            source=source_redaction.redacted_text,
             line_range=source_range.label,
             timestamps=timestamps,
             chunks=tuple(
@@ -106,4 +146,18 @@ class EvidenceManifestService:
                 )
                 for chunk in chunks
             ),
+        )
+
+    @staticmethod
+    def _prepare_redactions(
+        source: EvidenceManifestSource,
+    ) -> tuple[str, RedactionResult, RedactionResult]:
+        normalized = PreprocessingService.normalize_by_source(
+            source.original_text,
+            source.source_name,
+        )
+        return (
+            normalized,
+            RedactionService.redact_text(source.source_name),
+            RedactionService.redact_text(normalized),
         )

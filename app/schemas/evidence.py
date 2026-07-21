@@ -163,3 +163,40 @@ class EvidenceManifest(BaseModel):
     evidence: tuple[EvidenceManifestItem, ...] = Field(min_length=1)
 
     model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class RedactionPreviewFinding(BaseModel):
+    """Safe redaction metadata rendered without the matched value."""
+
+    location: Literal["source_name", "content"]
+    category: Literal[
+        "api_key",
+        "bearer_token",
+        "password",
+        "email",
+        "ip_address",
+        "authorization_header",
+        "credit_card",
+    ]
+    line_number: int = Field(gt=0)
+    column_number: int = Field(gt=0)
+    replacement: str = Field(min_length=1)
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class EvidenceRedactionPreview(BaseModel):
+    """Outbound-safe preview for one locally stored evidence item."""
+
+    evidence_code: EvidenceCode
+    evidence_type: EvidenceType
+    source_name: str = Field(min_length=1)
+    redacted_content: str = Field(min_length=1)
+    findings: tuple[RedactionPreviewFinding, ...]
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    @property
+    def redaction_count(self) -> int:
+        """Return the number of masked source and content values."""
+        return len(self.findings)

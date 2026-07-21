@@ -21,7 +21,15 @@ from app.config import get_settings
 from app.database import get_db
 from app.models import EvidenceType, Incident
 from app.routers.validation import validation_messages
-from app.schemas.evidence import EvidenceCreate, EvidenceUpdate
+from app.schemas.evidence import (
+    EvidenceCreate,
+    EvidenceManifestSource,
+    EvidenceUpdate,
+)
+from app.services.evidence_manifest_service import (
+    EvidenceManifestService,
+    EvidencePreviewValidationError,
+)
 from app.services.incident_service import IncidentNotFoundError, IncidentService
 from app.services.ingestion_service import (
     SUPPORTED_UPLOAD_EXTENSIONS,
@@ -133,6 +141,59 @@ def evidence_preview(
             "app_name": settings.app_name,
             "incident": evidence.incident,
             "evidence": evidence,
+        },
+    )
+
+
+@router.get(
+    "/incidents/{public_id}/evidence/{evidence_code}/redaction-preview",
+    response_class=HTMLResponse,
+)
+def redaction_preview(
+    request: Request,
+    public_id: str,
+    evidence_code: str,
+    session: DatabaseSession,
+) -> HTMLResponse:
+    """Render the outbound-safe redaction preview for one evidence item."""
+    try:
+        evidence = IngestionService(session).get_evidence_or_raise(
+            public_id,
+            evidence_code,
+        )
+        preview = EvidenceManifestService.build_redaction_preview(
+            EvidenceManifestSource(
+                evidence_code=evidence.evidence_code,
+                source_name=evidence.source_name,
+                evidence_type=evidence.evidence_type,
+                original_text=evidence.original_text,
+            )
+        )
+    except EvidenceItemNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except EvidencePreviewValidationError as exc:
+        return templates.TemplateResponse(
+            request=request,
+            name="redaction_preview_error.html",
+            context={
+                "app_name": settings.app_name,
+                "incident": evidence.incident,
+                "evidence_code": evidence.evidence_code,
+                "error_message": str(exc),
+            },
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        )
+
+    return templates.TemplateResponse(
+        request=request,
+        name="redaction_preview.html",
+        context={
+            "app_name": settings.app_name,
+            "incident": evidence.incident,
+            "preview": preview,
         },
     )
 

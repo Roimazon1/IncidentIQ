@@ -12,6 +12,16 @@
     <div class="d-flex gap-2">
       <a
         class="btn btn-outline-primary"
+        href="{{ url_for(
+          'redaction_preview',
+          public_id=incident.public_id,
+          evidence_code=evidence.evidence_code
+        ) }}"
+      >
+        Redaction preview
+      </a>
+      <a
+        class="btn btn-outline-secondary"
         href="{{ url_for('new_evidence_form', public_id=incident.public_id) }}"
       >
         Manage evidence

@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+
+{% block title %}Redaction preview | {{ preview.evidence_code }} | {{ app_name }}{% endblock %}
+
+{% block content %}
+  <div class="d-flex flex-wrap align-items-start justify-content-between gap-3 mb-4">
+    <div>
+      <div class="text-body-secondary small">{{ incident.public_id }}</div>
+      <h1 class="h2 mb-1">Redaction preview</h1>
+      <p class="text-body-secondary mb-0">
+        Evidence <code>{{ preview.evidence_code }}</code>
+      </p>
+    </div>
+    <div class="d-flex gap-2">
+      <a
+        class="btn btn-outline-primary"
+        href="{{ url_for(
+          'evidence_preview',
+          public_id=incident.public_id,
+          evidence_code=preview.evidence_code
+        ) }}"
+      >
+        Original evidence
+      </a>
+      <a
+        class="btn btn-outline-secondary"
+        href="{{ url_for('incident_detail', public_id=incident.public_id) }}"
+      >
+        Incident details
+      </a>
+    </div>
+  </div>
+
+  <div class="alert alert-warning border-start border-4 border-warning" role="alert">
+    <strong>Review before external AI use.</strong>
+    The original evidence remains local and unchanged. Automated detection is limited;
+    confirm that the masked preview contains no sensitive values before continuing.
+  </div>
+
+  <section class="card border-0 shadow-sm mb-4" aria-labelledby="preview-metadata-heading">
+    <div class="card-body p-4">
+      <h2 class="h4" id="preview-metadata-heading">Outbound metadata</h2>
+      <dl class="row mb-0">
+        <dt class="col-sm-3">Evidence code</dt>
+        <dd class="col-sm-9"><code>{{ preview.evidence_code }}</code></dd>
+        <dt class="col-sm-3">Source name</dt>
+        <dd class="col-sm-9 text-break">{{ preview.source_name }}</dd>
+        <dt class="col-sm-3">Evidence type</dt>
+        <dd class="col-sm-9 mb-0">{{ preview.evidence_type.value }}</dd>
+      </dl>
+    </div>
+  </section>
+
+  <section class="card border-0 shadow-sm mb-4" aria-labelledby="findings-heading">
+    <div class="card-body p-4">
+      <h2 class="h4" id="findings-heading">Masked values</h2>
+      {% if preview.findings %}
+        <p class="text-body-secondary">
+          {{ preview.redaction_count }} sensitive {{
+            'value was' if preview.redaction_count == 1 else 'values were'
+          }} masked.
+        </p>
+        <div class="table-responsive">
+          <table class="table align-middle mb-0">
+            <thead>
+              <tr>
+                <th scope="col">Location</th>
+                <th scope="col">Category</th>
+                <th scope="col">Position</th>
+                <th scope="col">Mask</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for finding in preview.findings %}
+                <tr>
+                  <td>{{ finding.location.replace('_', ' ').title() }}</td>
+                  <td>{{ finding.category.replace('_', ' ').title() }}</td>
+                  <td>Line {{ finding.line_number }}, column {{ finding.column_number }}</td>
+                  <td><code>{{ finding.replacement }}</code></td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        <p class="form-text mb-0 mt-3">
+          Finding coordinates refer to positions in the original normalized evidence,
+          before masks were inserted. They may not match character positions in the
+          displayed redacted text.
+        </p>
+      {% else %}
+        <p class="text-body-secondary mb-0">
+          No supported sensitive values were detected. Manual review is still required.
+        </p>
+      {% endif %}
+    </div>
+  </section>
+
+  <section class="card border-0 shadow-sm" aria-labelledby="redacted-content-heading">
+    <div class="card-body p-4">
+      <h2 class="h4" id="redacted-content-heading">Redacted content</h2>
+      <p class="text-body-secondary">
+        This line-numbered content matches the redaction pipeline used for the AI manifest.
+      </p>
+      <pre class="bg-body-tertiary border rounded p-3 overflow-auto mb-0"><code>{{ preview.redacted_content }}</code></pre>
+    </div>
+  </section>
+{% endblock %}
