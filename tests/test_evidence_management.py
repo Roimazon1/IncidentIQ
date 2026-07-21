@@ -7,7 +7,11 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.models import EvidenceItem, EvidenceType
 from app.schemas.evidence import EvidenceCreate
 from app.services.ingestion_service import EvidenceUpload, IngestionService
-from tests.evidence_test_support import create_incident, create_incident_through_api
+from tests.evidence_test_support import (
+    assert_active_evidence_tab,
+    create_incident,
+    create_incident_through_api,
+)
 
 
 def test_evidence_preview_renders_metadata_and_escaped_original_content(
@@ -34,7 +38,9 @@ def test_evidence_preview_renders_metadata_and_escaped_original_content(
     assert "Operator &lt;notes&gt;" in response.text
     assert EvidenceType.USER_COMPLAINT.value in response.text
     assert checksum in response.text
-    assert "&lt;script&gt;unsafe&lt;/script&gt;\ncheckout &amp; payment" in response.text
+    assert (
+        "&lt;script&gt;unsafe&lt;/script&gt;\ncheckout &amp; payment" in response.text
+    )
     assert original_text not in response.text
 
     form_response = database_client.get(f"/incidents/{public_id}/evidence/new")
@@ -66,9 +72,7 @@ def test_evidence_preview_is_scoped_to_the_incident(
             ),
         )
 
-    response = database_client.get(
-        f"/incidents/{first_public_id}/evidence/E-001"
-    )
+    response = database_client.get(f"/incidents/{first_public_id}/evidence/E-001")
 
     assert response.status_code == 200
     assert "Checkout log" in response.text
@@ -111,17 +115,35 @@ def test_saved_evidence_type_can_be_corrected(
     )
 
     assert response.status_code == 303
-    assert response.headers["location"] == "/incidents/INC-000001/evidence/new"
+    assert response.headers["location"] == (
+        "/incidents/INC-000001/evidence/new?tab=saved"
+    )
     with database_session_factory() as session:
         saved_evidence = session.scalar(select(EvidenceItem))
         assert saved_evidence is not None
         assert saved_evidence.evidence_type is EvidenceType.DATABASE_ERROR
 
-    form_response = database_client.get("/incidents/INC-000001/evidence/new")
+    form_response = database_client.get(response.headers["location"])
     assert form_response.status_code == 200
+    assert_active_evidence_tab(form_response, "saved")
     assert "Correct saved classifications" in form_response.text
     assert "E-001" in form_response.text
     assert "Database warning" in form_response.text
+
+
+def test_evidence_form_tab_query_is_validated(
+    database_client: TestClient,
+) -> None:
+    create_incident_through_api(database_client)
+
+    saved_response = database_client.get("/incidents/INC-000001/evidence/new?tab=saved")
+    invalid_response = database_client.get(
+        "/incidents/INC-000001/evidence/new?tab=unknown"
+    )
+
+    assert saved_response.status_code == 200
+    assert_active_evidence_tab(saved_response, "saved")
+    assert invalid_response.status_code == 422
 
 
 def test_type_correction_is_isolated_by_incident_public_id(
@@ -158,9 +180,7 @@ def test_type_correction_is_isolated_by_incident_public_id(
     assert response.status_code == 303
     with database_session_factory() as session:
         saved_evidence = list(
-            session.scalars(
-                select(EvidenceItem).order_by(EvidenceItem.incident_id)
-            )
+            session.scalars(select(EvidenceItem).order_by(EvidenceItem.incident_id))
         )
     assert [item.evidence_code for item in saved_evidence] == ["E-001", "E-001"]
     assert [item.evidence_type for item in saved_evidence] == [
@@ -234,6 +254,7 @@ def test_invalid_evidence_type_is_rejected_without_changing_saved_type(
 
     assert response.status_code == 422
     assert "Input should be" in response.text
+    assert_active_evidence_tab(response, "saved")
     with database_session_factory() as session:
         saved_evidence = session.scalar(select(EvidenceItem))
         assert saved_evidence is not None

@@ -1,6 +1,16 @@
 """Focused tests for incident service-backed HTTP routes."""
 
+from datetime import UTC, datetime
+
+import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import select
+from sqlalchemy.orm import Session, sessionmaker
+
+from app import templating
+from app.config import Settings
+from app.models import Incident
+from app.routers import incidents as incident_router
 
 
 def _incident_form_data(**overrides: str) -> dict[str, str]:
@@ -8,7 +18,7 @@ def _incident_form_data(**overrides: str) -> dict[str, str]:
         "name": "Checkout failures",
         "description": "Intermittent checkout errors",
         "affected_service": "checkout",
-        "reported_start_time": "2025-01-01T10:00:00Z",
+        "reported_start_time": "2025-01-01T10:00",
     }
     values.update(overrides)
     return values
@@ -20,6 +30,9 @@ def test_new_incident_form_renders(database_client: TestClient) -> None:
     assert response.status_code == 200
     assert "Create incident" in response.text
     assert "Incident title" in response.text
+    assert 'type="datetime-local"' in response.text
+    assert 'step="60"' in response.text
+    assert "it is stored in UTC" in response.text
     assert "Evidence type" not in response.text
 
 
@@ -99,6 +112,73 @@ def test_dashboard_lists_saved_incidents_newest_first_with_statuses(
     assert "checkout" in response.text
 
 
+def test_incident_timestamps_use_configured_timezone_and_keep_iso_values(
+    database_client: TestClient,
+    database_session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configured_settings = Settings(
+        display_timezone="Asia/Jerusalem",
+        _env_file=None,
+    )
+    monkeypatch.setattr(incident_router, "settings", configured_settings)
+    monkeypatch.setattr(templating, "get_settings", lambda: configured_settings)
+    database_client.post(
+        "/incidents",
+        data=_incident_form_data(
+            reported_start_time="2025-07-01T12:00",
+        ),
+    )
+    with database_session_factory() as session:
+        incident = session.scalar(select(Incident))
+        assert incident is not None
+        assert incident.reported_start_time == datetime(
+            2025,
+            7,
+            1,
+            9,
+            0,
+            tzinfo=UTC,
+        )
+        incident.created_at = datetime(2025, 7, 1, 9, 0, tzinfo=UTC)
+        session.commit()
+
+    dashboard_response = database_client.get("/")
+    detail_response = database_client.get("/incidents/INC-000001")
+
+    assert dashboard_response.status_code == 200
+    assert 'datetime="2025-07-01T09:00:00+00:00"' in dashboard_response.text
+    assert "Jul 01, 2025 at 12:00 IDT" in dashboard_response.text
+    assert detail_response.status_code == 200
+    assert detail_response.text.count('datetime="2025-07-01T09:00:00+00:00"') == 2
+    assert 'value="2025-07-01T12:00"' in detail_response.text
+    assert "Enter the time in Asia/Jerusalem" in detail_response.text
+    assert "Jul 01, 2025 at 12:00 IDT" in detail_response.text
+    api_timestamp = database_client.get("/incidents").json()[0]["reported_start_time"]
+    assert datetime.fromisoformat(api_timestamp.replace("Z", "+00:00")) == datetime(
+        2025,
+        7,
+        1,
+        9,
+        0,
+        tzinfo=UTC,
+    )
+
+
+def test_invalid_local_incident_time_returns_a_clear_form_error(
+    database_client: TestClient,
+) -> None:
+    response = database_client.post(
+        "/incidents",
+        data=_incident_form_data(reported_start_time="not-a-local-time"),
+    )
+
+    assert response.status_code == 422
+    assert "must be a valid local date and time" in response.text
+    assert 'value="not-a-local-time"' in response.text
+    assert database_client.get("/incidents").json() == []
+
+
 def test_incident_update_persists_and_can_clear_reported_start_time(
     database_client: TestClient,
 ) -> None:
@@ -143,9 +223,7 @@ def test_missing_incident_returns_not_found(database_client: TestClient) -> None
     response = database_client.get("/incidents/INC-999999")
 
     assert response.status_code == 404
-    assert response.json() == {
-        "detail": "Incident INC-999999 was not found."
-    }
+    assert response.json() == {"detail": "Incident INC-999999 was not found."}
 
 
 def test_updating_missing_incident_returns_not_found(
@@ -157,6 +235,4 @@ def test_updating_missing_incident_returns_not_found(
     )
 
     assert response.status_code == 404
-    assert response.json() == {
-        "detail": "Incident INC-999999 was not found."
-    }
+    assert response.json() == {"detail": "Incident INC-999999 was not found."}

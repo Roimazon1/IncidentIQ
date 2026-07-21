@@ -1,6 +1,8 @@
 """Incident creation, listing, detail, and update routes."""
 
+from datetime import UTC, datetime
 from typing import Annotated
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
@@ -27,9 +29,40 @@ settings = get_settings()
 DatabaseSession = Annotated[Session, Depends(get_db)]
 
 
+class _IncidentFormTimeError(ValueError):
+    """Raised when a submitted local incident time cannot be interpreted."""
+
+
+def _parse_reported_start_time(value: str) -> datetime | None:
+    if not value:
+        return None
+
+    try:
+        local_datetime = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise _IncidentFormTimeError(
+            "Reported start time must be a valid local date and time."
+        ) from exc
+    if local_datetime.tzinfo is not None:
+        raise _IncidentFormTimeError(
+            "Reported start time must not include a timezone offset."
+        )
+
+    display_timezone = ZoneInfo(settings.display_timezone)
+    utc_datetime = local_datetime.replace(tzinfo=display_timezone).astimezone(UTC)
+    round_trip = utc_datetime.astimezone(display_timezone).replace(tzinfo=None)
+    if round_trip != local_datetime:
+        raise _IncidentFormTimeError(
+            f"Reported start time does not exist in {settings.display_timezone}."
+        )
+    return utc_datetime
+
+
 def _incident_form_values(incident: Incident) -> dict[str, str]:
     reported_start_time = (
-        incident.reported_start_time.isoformat()
+        incident.reported_start_time.astimezone(ZoneInfo(settings.display_timezone))
+        .replace(tzinfo=None)
+        .isoformat(timespec="minutes")
         if incident.reported_start_time is not None
         else ""
     )
@@ -39,6 +72,23 @@ def _incident_form_values(incident: Incident) -> dict[str, str]:
         "affected_service": incident.affected_service,
         "reported_start_time": reported_start_time,
     }
+
+
+def _incident_form_context(
+    *,
+    errors: list[str],
+    values: dict[str, str],
+    incident: Incident | None = None,
+) -> dict[str, object]:
+    context: dict[str, object] = {
+        "app_name": settings.app_name,
+        "display_timezone": settings.display_timezone,
+        "errors": errors,
+        "values": values,
+    }
+    if incident is not None:
+        context["incident"] = incident
+    return context
 
 
 @router.get("", response_model=list[IncidentRead])
@@ -60,11 +110,7 @@ def new_incident_form(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(
         request=request,
         name="incident_form.html",
-        context={
-            "app_name": settings.app_name,
-            "errors": [],
-            "values": {},
-        },
+        context=_incident_form_context(errors=[], values={}),
     )
 
 
@@ -89,29 +135,26 @@ def create_incident(
             name=name,
             description=description,
             affected_service=affected_service,
-            reported_start_time=reported_start_time or None,
+            reported_start_time=_parse_reported_start_time(reported_start_time),
         )
         incident = IncidentService(session).create_incident(incident_data)
-    except ValidationError as exc:
+    except (_IncidentFormTimeError, ValidationError) as exc:
+        errors = (
+            [str(exc)]
+            if isinstance(exc, _IncidentFormTimeError)
+            else validation_messages(exc)
+        )
         return templates.TemplateResponse(
             request=request,
             name="incident_form.html",
-            context={
-                "app_name": settings.app_name,
-                "errors": validation_messages(exc),
-                "values": values,
-            },
+            context=_incident_form_context(errors=errors, values=values),
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         )
     except IncidentPersistenceError as exc:
         return templates.TemplateResponse(
             request=request,
             name="incident_form.html",
-            context={
-                "app_name": settings.app_name,
-                "errors": [str(exc)],
-                "values": values,
-            },
+            context=_incident_form_context(errors=[str(exc)], values=values),
             status_code=status.HTTP_409_CONFLICT,
         )
 
@@ -139,12 +182,11 @@ def incident_detail(
     return templates.TemplateResponse(
         request=request,
         name="incident_detail.html",
-        context={
-            "app_name": settings.app_name,
-            "incident": incident,
-            "errors": [],
-            "values": _incident_form_values(incident),
-        },
+        context=_incident_form_context(
+            incident=incident,
+            errors=[],
+            values=_incident_form_values(incident),
+        ),
     )
 
 
@@ -171,7 +213,7 @@ def update_incident(
             name=name,
             description=description,
             affected_service=affected_service,
-            reported_start_time=reported_start_time or None,
+            reported_start_time=_parse_reported_start_time(reported_start_time),
         )
         incident = service.update_incident(public_id, incident_data)
     except IncidentNotFoundError as exc:
@@ -179,7 +221,7 @@ def update_incident(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(exc),
         ) from exc
-    except ValidationError as exc:
+    except (_IncidentFormTimeError, ValidationError) as exc:
         try:
             incident = service.get_incident_or_raise(public_id)
         except IncidentNotFoundError as missing_exc:
@@ -187,15 +229,19 @@ def update_incident(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=str(missing_exc),
             ) from missing_exc
+        errors = (
+            [str(exc)]
+            if isinstance(exc, _IncidentFormTimeError)
+            else validation_messages(exc)
+        )
         return templates.TemplateResponse(
             request=request,
             name="incident_detail.html",
-            context={
-                "app_name": settings.app_name,
-                "incident": incident,
-                "errors": validation_messages(exc),
-                "values": values,
-            },
+            context=_incident_form_context(
+                incident=incident,
+                errors=errors,
+                values=values,
+            ),
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         )
     except IncidentPersistenceError as exc:
@@ -203,12 +249,11 @@ def update_incident(
         return templates.TemplateResponse(
             request=request,
             name="incident_detail.html",
-            context={
-                "app_name": settings.app_name,
-                "incident": incident,
-                "errors": [str(exc)],
-                "values": values,
-            },
+            context=_incident_form_context(
+                incident=incident,
+                errors=[str(exc)],
+                values=values,
+            ),
             status_code=status.HTTP_409_CONFLICT,
         )
 

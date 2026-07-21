@@ -47,7 +47,7 @@
                     </td>
                     <td class="pe-4">
                       <time datetime="{{ incident.created_at.isoformat() }}">
-                        {{ incident.created_at.strftime('%Y-%m-%d %H:%M UTC') }}
+                        {{ incident.created_at | incident_datetime }}
                       </time>
                     </td>
                   </tr>

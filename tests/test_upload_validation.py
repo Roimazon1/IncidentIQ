@@ -12,6 +12,7 @@ from app.services.ingestion_service import (
     IngestionService,
 )
 from tests.evidence_test_support import (
+    assert_active_evidence_tab,
     assert_no_evidence_and_draft,
     create_incident,
     create_incident_through_api,
@@ -85,6 +86,7 @@ def test_unsupported_extension_rejects_the_entire_upload_batch(
     assert response.status_code == 422
     assert "payload.exe has an unsupported extension" in response.text
     assert ".txt, .log, .json, .csv, .md" in response.text
+    assert_active_evidence_tab(response, "upload")
     assert_no_evidence_and_draft(database_session_factory)
 
 
@@ -103,6 +105,22 @@ def test_oversized_upload_returns_clear_error_and_creates_nothing(
 
     assert response.status_code == 422
     assert "checkout.log exceeds the maximum upload size of 4 bytes" in response.text
+    assert_no_evidence_and_draft(database_session_factory)
+
+
+def test_empty_upload_returns_clear_error_and_creates_nothing(
+    database_client: TestClient,
+    database_session_factory: sessionmaker[Session],
+) -> None:
+    create_incident_through_api(database_client)
+
+    response = database_client.post(
+        "/incidents/INC-000001/evidence/upload",
+        files=[("files", ("empty.log", b"", "text/plain"))],
+    )
+
+    assert response.status_code == 422
+    assert "evidence text must not be blank" in response.text
     assert_no_evidence_and_draft(database_session_factory)
 
 

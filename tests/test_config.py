@@ -14,6 +14,7 @@ def test_defaults_and_local_dotenv_values_load(tmp_path) -> None:
         "AI_PROVIDER=fake\n"
         "OPENAI_API_KEY=\n"
         "MAX_UPLOAD_BYTES=2048\n"
+        "DISPLAY_TIMEZONE=Asia/Jerusalem\n"
         "DEBUG=false\n"
         "UNKNOWN_SETTING=ignored\n",
         encoding="utf-8",
@@ -27,6 +28,7 @@ def test_defaults_and_local_dotenv_values_load(tmp_path) -> None:
     assert settings.openai_api_key is not None
     assert settings.openai_api_key.get_secret_value() == ""
     assert settings.max_upload_bytes == 2048
+    assert settings.display_timezone == "Asia/Jerusalem"
     assert settings.debug is False
 
 
@@ -44,12 +46,14 @@ def test_environment_variables_override_defaults(monkeypatch) -> None:
     monkeypatch.setenv("APP_NAME", "Environment IncidentIQ")
     monkeypatch.setenv("DATABASE_URL", "sqlite:///./environment.db")
     monkeypatch.setenv("AI_PROVIDER", "custom")
+    monkeypatch.setenv("DISPLAY_TIMEZONE", "America/New_York")
 
     settings = Settings(_env_file=None)
 
     assert settings.app_name == "Environment IncidentIQ"
     assert settings.database_url == "sqlite:///./environment.db"
     assert settings.ai_provider == "custom"
+    assert settings.display_timezone == "America/New_York"
 
 
 def test_fake_provider_accepts_an_empty_api_key(monkeypatch) -> None:
@@ -67,6 +71,13 @@ def test_invalid_max_upload_bytes_is_rejected(monkeypatch) -> None:
     monkeypatch.setenv("MAX_UPLOAD_BYTES", "0")
 
     with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+def test_invalid_display_timezone_is_rejected(monkeypatch) -> None:
+    monkeypatch.setenv("DISPLAY_TIMEZONE", "Not/A_Timezone")
+
+    with pytest.raises(ValidationError, match="valid IANA timezone"):
         Settings(_env_file=None)
 
 

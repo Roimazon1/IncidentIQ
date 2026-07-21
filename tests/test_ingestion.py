@@ -12,6 +12,7 @@ from app.services.ingestion_service import (
     IngestionService,
 )
 from tests.evidence_test_support import (
+    assert_active_evidence_tab,
     assert_no_evidence_and_draft,
     create_incident,
     create_incident_through_api,
@@ -94,6 +95,10 @@ def test_evidence_form_and_pasted_text_post_redirect_flow(
     assert f"Supported formats: {readable_formats}." in form_response.text
     assert "multiple" in form_response.text
     assert "Evidence type" in form_response.text
+    assert 'id="paste-tab"' in form_response.text
+    assert 'id="upload-tab"' in form_response.text
+    assert 'id="saved-tab"' in form_response.text
+    assert_active_evidence_tab(form_response, "paste")
     for evidence_type in EvidenceType:
         assert f'value="{evidence_type.value}"' in form_response.text
 
@@ -175,9 +180,7 @@ def test_multifile_upload_redirects_and_persists_each_file(
     assert response.headers["location"] == "/incidents/INC-000001"
     with database_session_factory() as session:
         saved_uploads = list(
-            session.scalars(
-                select(EvidenceItem).order_by(EvidenceItem.evidence_code)
-            )
+            session.scalars(select(EvidenceItem).order_by(EvidenceItem.evidence_code))
         )
     assert [item.evidence_code for item in saved_uploads] == ["E-001", "E-002"]
     assert [item.source_name for item in saved_uploads] == [
@@ -189,9 +192,57 @@ def test_multifile_upload_redirects_and_persists_each_file(
         "time,error_rate\n12:00,18",
     ]
     assert all(
-        item.evidence_type is EvidenceType.MONITORING_ALERT
-        for item in saved_uploads
+        item.evidence_type is EvidenceType.MONITORING_ALERT for item in saved_uploads
     )
+
+
+def test_duplicate_content_is_retained_as_separate_evidence_records(
+    database_client: TestClient,
+    database_session_factory: sessionmaker[Session],
+) -> None:
+    exact_content = "ERROR checkout failed after deployment v2.4.1"
+    create_incident_through_api(database_client)
+
+    pasted_response = database_client.post(
+        "/incidents/INC-000001/evidence/text",
+        data={
+            "source_name": "Operator paste",
+            "original_text": exact_content,
+        },
+        follow_redirects=False,
+    )
+    uploaded_response = database_client.post(
+        "/incidents/INC-000001/evidence/upload",
+        files=[
+            (
+                "files",
+                ("checkout.log", exact_content.encode("utf-8"), "text/plain"),
+            )
+        ],
+        follow_redirects=False,
+    )
+
+    assert pasted_response.status_code == 303
+    assert uploaded_response.status_code == 303
+    with database_session_factory() as session:
+        saved_evidence = list(
+            session.scalars(select(EvidenceItem).order_by(EvidenceItem.evidence_code))
+        )
+        assert [item.evidence_code for item in saved_evidence] == [
+            "E-001",
+            "E-002",
+        ]
+        assert [item.source_name for item in saved_evidence] == [
+            "Operator paste",
+            "checkout.log",
+        ]
+        assert [item.original_text for item in saved_evidence] == [
+            exact_content,
+            exact_content,
+        ]
+        assert saved_evidence[0].checksum == saved_evidence[1].checksum
+        assert saved_evidence[0].id != saved_evidence[1].id
+        assert saved_evidence[0].incident.status is IncidentStatus.READY
 
 
 def test_uploaded_evidence_continues_sequence_after_pasted_evidence(
@@ -244,15 +295,11 @@ def test_upload_to_missing_incident_returns_not_found(
 ) -> None:
     response = database_client.post(
         "/incidents/INC-999999/evidence/upload",
-        files=[
-            ("files", ("checkout.log", b"ERROR checkout failed", "text/plain"))
-        ],
+        files=[("files", ("checkout.log", b"ERROR checkout failed", "text/plain"))],
     )
 
     assert response.status_code == 404
-    assert response.json() == {
-        "detail": "Incident INC-999999 was not found."
-    }
+    assert response.json() == {"detail": "Incident INC-999999 was not found."}
 
 
 def test_blank_pasted_evidence_preserves_form_and_creates_nothing(
@@ -272,6 +319,7 @@ def test_blank_pasted_evidence_preserves_form_and_creates_nothing(
     assert "evidence text must not be blank" in response.text
     assert f'value="{source_name}"' in response.text
     assert f">{original_text}</textarea>" in response.text
+    assert_active_evidence_tab(response, "paste")
     assert_no_evidence_and_draft(database_session_factory)
 
 
@@ -281,9 +329,7 @@ def test_get_evidence_form_for_missing_incident_returns_not_found(
     response = database_client.get("/incidents/INC-999999/evidence/new")
 
     assert response.status_code == 404
-    assert response.json() == {
-        "detail": "Incident INC-999999 was not found."
-    }
+    assert response.json() == {"detail": "Incident INC-999999 was not found."}
 
 
 def test_posting_pasted_evidence_to_missing_incident_returns_not_found(
@@ -298,6 +344,4 @@ def test_posting_pasted_evidence_to_missing_incident_returns_not_found(
     )
 
     assert response.status_code == 404
-    assert response.json() == {
-        "detail": "Incident INC-999999 was not found."
-    }
+    assert response.json() == {"detail": "Incident INC-999999 was not found."}

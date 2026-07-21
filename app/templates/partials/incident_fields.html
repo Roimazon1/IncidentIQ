@@ -38,11 +38,12 @@
     class="form-control"
     id="reported_start_time"
     name="reported_start_time"
+    type="datetime-local"
     value="{{ values.get('reported_start_time', '') }}"
-    placeholder="2025-01-01T10:00:00Z"
+    step="60"
     aria-describedby="reported-start-help"
   >
   <div class="form-text" id="reported-start-help">
-    Optional. Use ISO 8601 with a timezone, such as Z for UTC.
+    Optional. Enter the time in {{ display_timezone }}; it is stored in UTC.
   </div>
 </div>

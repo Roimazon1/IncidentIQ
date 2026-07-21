@@ -1,6 +1,6 @@
 """Evidence entry routes for pasted text and uploaded files."""
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import (
     APIRouter,
@@ -8,6 +8,7 @@ from fastapi import (
     File,
     Form,
     HTTPException,
+    Query,
     Request,
     UploadFile,
     status,
@@ -36,6 +37,7 @@ from app.templating import templates
 router = APIRouter(tags=["evidence"])
 settings = get_settings()
 DatabaseSession = Annotated[Session, Depends(get_db)]
+EvidenceFormTab = Literal["paste", "upload", "saved"]
 UPLOAD_ACCEPT = ",".join(SUPPORTED_UPLOAD_EXTENSIONS)
 UPLOAD_FORMATS_TEXT = (
     f"{', '.join(SUPPORTED_UPLOAD_EXTENSIONS[:-1])}, and "
@@ -49,6 +51,7 @@ def _evidence_form_context(
     *,
     errors: list[str],
     values: dict[str, str] | None = None,
+    active_tab: EvidenceFormTab = "paste",
 ) -> dict[str, object]:
     form_values = {
         "source_name": "Pasted text",
@@ -60,12 +63,11 @@ def _evidence_form_context(
     return {
         "app_name": settings.app_name,
         "incident": incident,
-        "evidence_items": IngestionService(session).list_evidence_metadata(
-            incident.id
-        ),
+        "evidence_items": IngestionService(session).list_evidence_metadata(incident.id),
         "evidence_types": list(EvidenceType),
         "errors": errors,
         "values": form_values,
+        "active_tab": active_tab,
         "upload_accept": UPLOAD_ACCEPT,
         "upload_formats_text": UPLOAD_FORMATS_TEXT,
     }
@@ -79,6 +81,7 @@ def new_evidence_form(
     request: Request,
     public_id: str,
     session: DatabaseSession,
+    tab: Annotated[EvidenceFormTab, Query()] = "paste",
 ) -> HTMLResponse:
     """Render the pasted-text and file-upload form for one incident."""
     try:
@@ -96,6 +99,7 @@ def new_evidence_form(
             session,
             incident,
             errors=[],
+            active_tab=tab,
         ),
     )
 
@@ -250,6 +254,7 @@ def create_uploaded_evidence(
                 incident,
                 errors=errors,
                 values=values,
+                active_tab="upload",
             ),
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         )
@@ -263,6 +268,7 @@ def create_uploaded_evidence(
                 incident,
                 errors=[str(exc)],
                 values=values,
+                active_tab="upload",
             ),
             status_code=status.HTTP_409_CONFLICT,
         )
@@ -312,6 +318,7 @@ def update_evidence_type(
                 session,
                 incident,
                 errors=validation_messages(exc),
+                active_tab="saved",
             ),
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         )
@@ -324,11 +331,12 @@ def update_evidence_type(
                 session,
                 incident,
                 errors=[str(exc)],
+                active_tab="saved",
             ),
             status_code=status.HTTP_409_CONFLICT,
         )
 
     return RedirectResponse(
-        url=f"/incidents/{public_id}/evidence/new",
+        url=f"/incidents/{public_id}/evidence/new?tab=saved",
         status_code=status.HTTP_303_SEE_OTHER,
     )
