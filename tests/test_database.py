@@ -26,6 +26,20 @@ def test_database_engine_supports_sqlite() -> None:
     assert result == 1
 
 
+def test_sqlite_engine_enables_foreign_key_enforcement() -> None:
+    engine = database.create_database_engine("sqlite:///:memory:")
+
+    try:
+        with engine.connect() as connection:
+            foreign_keys_enabled = connection.exec_driver_sql(
+                "PRAGMA foreign_keys",
+            ).scalar_one()
+    finally:
+        engine.dispose()
+
+    assert foreign_keys_enabled == 1
+
+
 def test_session_factory_is_bound_to_configured_engine() -> None:
     session = database.SessionLocal()
 

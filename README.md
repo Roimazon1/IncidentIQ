@@ -56,6 +56,16 @@ Copy-Item .env.example .env
 The default `AI_PROVIDER=fake` setting does not require an OpenAI API key. Keep
 real API keys only in the ignored `.env` file; never add them to `.env.example`.
 
+## Initialize the Database
+
+Create any missing tables in the configured database:
+
+```powershell
+.venv\Scripts\python.exe scripts\init_db.py
+```
+
+The command is idempotent: running it again preserves existing data.
+
 ## Run
 
 ```powershell
