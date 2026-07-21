@@ -12,6 +12,10 @@ from app.models.incident import (
     AFFECTED_SERVICE_MAX_LENGTH,
     INCIDENT_NAME_MAX_LENGTH,
 )
+from app.success_notices import (
+    SUCCESS_NOTICE_QUERY_PARAMETER,
+    success_notice_message,
+)
 
 APP_DIRECTORY = Path(__file__).resolve().parent
 
@@ -28,4 +32,6 @@ templates.env.globals.update(
     AFFECTED_SERVICE_MAX_LENGTH=AFFECTED_SERVICE_MAX_LENGTH,
     INCIDENT_NAME_MAX_LENGTH=INCIDENT_NAME_MAX_LENGTH,
     SOURCE_NAME_MAX_LENGTH=SOURCE_NAME_MAX_LENGTH,
+    SUCCESS_NOTICE_QUERY_PARAMETER=SUCCESS_NOTICE_QUERY_PARAMETER,
+    success_notice_message=success_notice_message,
 )

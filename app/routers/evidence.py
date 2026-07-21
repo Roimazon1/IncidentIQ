@@ -39,6 +39,7 @@ from app.services.ingestion_service import (
     EvidenceUploadValidationError,
     IngestionService,
 )
+from app.success_notices import SuccessNotice, add_success_notice
 from app.templating import templates
 
 
@@ -263,7 +264,10 @@ def create_pasted_evidence(
         )
 
     return RedirectResponse(
-        url=f"/incidents/{public_id}/evidence/new?tab=saved",
+        url=add_success_notice(
+            f"/incidents/{public_id}/evidence/new?tab=saved",
+            SuccessNotice.PASTED_EVIDENCE_CREATED,
+        ),
         status_code=status.HTTP_303_SEE_OTHER,
     )
 
@@ -335,7 +339,10 @@ def create_uploaded_evidence(
         )
 
     return RedirectResponse(
-        url=f"/incidents/{public_id}/evidence/new?tab=saved",
+        url=add_success_notice(
+            f"/incidents/{public_id}/evidence/new?tab=saved",
+            SuccessNotice.EVIDENCE_FILES_UPLOADED,
+        ),
         status_code=status.HTTP_303_SEE_OTHER,
     )
 
@@ -398,6 +405,9 @@ def update_evidence_type(
         )
 
     return RedirectResponse(
-        url=f"/incidents/{public_id}/evidence/new?tab=saved",
+        url=add_success_notice(
+            f"/incidents/{public_id}/evidence/new?tab=saved",
+            SuccessNotice.EVIDENCE_TYPE_UPDATED,
+        ),
         status_code=status.HTTP_303_SEE_OTHER,
     )

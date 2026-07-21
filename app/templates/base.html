@@ -11,6 +11,8 @@
     <link href="{{ url_for('static', path='/css/app.css') }}" rel="stylesheet">
   </head>
   <body class="d-flex min-vh-100 flex-column bg-body-tertiary">
+    {% include "partials/success_toast.html" %}
+
     <header>
       <nav class="navbar bg-dark shadow-sm" data-bs-theme="dark">
         <div class="container">
@@ -45,5 +47,6 @@
     <script
       src="{{ url_for('static', path='/vendor/bootstrap/5.3.8/bootstrap.bundle.min.js') }}"
     ></script>
+    <script src="{{ url_for('static', path='/js/app.js') }}"></script>
   </body>
 </html>

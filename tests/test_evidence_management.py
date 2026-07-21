@@ -144,7 +144,7 @@ def test_saved_evidence_type_can_be_corrected(
 
     assert response.status_code == 303
     assert response.headers["location"] == (
-        "/incidents/INC-000001/evidence/new?tab=saved"
+        "/incidents/INC-000001/evidence/new?tab=saved&notice=evidence-type-updated"
     )
     with database_session_factory() as session:
         saved_evidence = session.scalar(select(EvidenceItem))
@@ -153,6 +153,7 @@ def test_saved_evidence_type_can_be_corrected(
 
     form_response = database_client.get(response.headers["location"])
     assert form_response.status_code == 200
+    assert "Evidence type updated successfully." in form_response.text
     assert_active_evidence_tab(form_response, "saved")
     assert "Correct saved classifications" in form_response.text
     assert "E-001" in form_response.text
