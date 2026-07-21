@@ -4,8 +4,46 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}{{ app_name }}{% endblock %}</title>
+    <link
+      href="{{ url_for('static', path='/vendor/bootstrap/5.3.8/bootstrap.min.css') }}"
+      rel="stylesheet"
+    >
+    <link href="{{ url_for('static', path='/css/app.css') }}" rel="stylesheet">
   </head>
-  <body>
-    {% block content %}{% endblock %}
+  <body class="d-flex min-vh-100 flex-column bg-body-tertiary">
+    <header>
+      <nav class="navbar bg-dark shadow-sm" data-bs-theme="dark">
+        <div class="container">
+          <a class="navbar-brand fw-semibold" href="{{ url_for('dashboard') }}">
+            {{ app_name }}
+          </a>
+        </div>
+      </nav>
+    </header>
+
+    <div class="container pt-3">
+      <div
+        class="alert alert-warning border-start border-4 border-warning mb-0"
+        role="alert"
+      >
+        <strong>AI-assisted analysis:</strong>
+        Hypotheses are not confirmed facts. Review the supporting evidence and
+        uncertainty before accepting any conclusion.
+      </div>
+    </div>
+
+    <main class="container flex-grow-1 py-4">
+      {% block content %}{% endblock %}
+    </main>
+
+    <footer class="border-top bg-white py-3 text-center text-body-secondary">
+      <div class="container">
+        IncidentIQ supports human investigation; it does not determine root cause.
+      </div>
+    </footer>
+
+    <script
+      src="{{ url_for('static', path='/vendor/bootstrap/5.3.8/bootstrap.bundle.min.js') }}"
+    ></script>
   </body>
 </html>
