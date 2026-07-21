@@ -25,7 +25,7 @@ def test_incident_model_fields_and_constraints() -> None:
         "created_at",
         "updated_at",
     }
-    assert set(mapper.relationships.keys()) == {"evidence_items"}
+    assert set(mapper.relationships.keys()) == {"analysis_runs", "evidence_items"}
     assert columns.id.primary_key is True
     assert columns.public_id.nullable is False
     assert columns.public_id.unique is True

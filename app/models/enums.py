@@ -34,3 +34,30 @@ class ClaimSupportStatus(StrEnum):
     INFERRED = "INFERRED"
     CONTRADICTED = "CONTRADICTED"
     UNSUPPORTED = "UNSUPPORTED"
+
+
+class AnalysisRunStatus(StrEnum):
+    """Lifecycle states for one auditable analysis execution."""
+
+    RUNNING = "RUNNING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+
+
+class FactReviewStatus(StrEnum):
+    """Human review decisions for an extracted fact."""
+
+    PENDING = "PENDING"
+    ACCEPTED = "ACCEPTED"
+    REJECTED = "REJECTED"
+    RECLASSIFIED_AS_ASSUMPTION = "RECLASSIFIED_AS_ASSUMPTION"
+
+
+class HypothesisStatus(StrEnum):
+    """Human review states for a generated hypothesis."""
+
+    UNTESTED = "UNTESTED"
+    SUPPORTED = "SUPPORTED"
+    WEAKENED = "WEAKENED"
+    REJECTED = "REJECTED"
+    CONFIRMED_BY_HUMAN = "CONFIRMED_BY_HUMAN"

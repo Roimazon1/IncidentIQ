@@ -15,6 +15,7 @@ from app.models.mixins import TimestampMixin
 from app.models.types import UTCDateTime
 
 if TYPE_CHECKING:
+    from app.models.analysis import AnalysisRun
     from app.models.evidence import EvidenceItem
 
 
@@ -61,6 +62,11 @@ class Incident(TimestampMixin, Base):
     )
 
     evidence_items: Mapped[list[EvidenceItem]] = relationship(
+        back_populates="incident",
+        cascade="all, delete-orphan",
+        single_parent=True,
+    )
+    analysis_runs: Mapped[list[AnalysisRun]] = relationship(
         back_populates="incident",
         cascade="all, delete-orphan",
         single_parent=True,

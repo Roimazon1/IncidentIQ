@@ -6,8 +6,8 @@ import pytest
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.database import Base, create_database_engine
-from app.models import EvidenceItem, Incident
+from app import models
+from app.database import create_database_engine
 
 
 @pytest.fixture
@@ -25,8 +25,5 @@ def sqlite_engine() -> Iterator[Engine]:
 def model_session_factory(sqlite_engine: Engine) -> sessionmaker[Session]:
     """Provide sessions backed by fresh IncidentIQ model tables."""
 
-    Base.metadata.create_all(
-        sqlite_engine,
-        tables=(Incident.__table__, EvidenceItem.__table__),
-    )
+    models.Incident.metadata.create_all(sqlite_engine)
     return sessionmaker(bind=sqlite_engine)
