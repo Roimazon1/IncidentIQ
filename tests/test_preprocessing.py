@@ -8,6 +8,7 @@ from io import StringIO
 import pytest
 
 from app.services.preprocessing_service import (
+    EvidenceChunk,
     ExtractedTimestamp,
     PreprocessingService,
     SourceRange,
@@ -305,3 +306,110 @@ def test_multiple_timestamps_are_not_implicitly_marked_conflicting() -> None:
 
     assert len(extracted) == 2
     assert all(record.status is TimestampStatus.DETECTED for record in extracted)
+
+
+def test_chunks_retain_evidence_id_sequence_and_source_ranges() -> None:
+    text = "one\ntwo\nthree\nfour\nfive"
+
+    chunks = PreprocessingService.split_into_chunks(
+        text,
+        evidence_id="E-004",
+        max_characters=100,
+        max_lines=2,
+    )
+
+    assert chunks == [
+        EvidenceChunk(
+            sequence=1,
+            evidence_id="E-004",
+            text="one\ntwo\n",
+            source_range=SourceRange(start_line=1, end_line=2),
+        ),
+        EvidenceChunk(
+            sequence=2,
+            evidence_id="E-004",
+            text="three\nfour\n",
+            source_range=SourceRange(start_line=3, end_line=4),
+        ),
+        EvidenceChunk(
+            sequence=3,
+            evidence_id="E-004",
+            text="five",
+            source_range=SourceRange(start_line=5, end_line=5),
+        ),
+    ]
+    assert "".join(chunk.text for chunk in chunks) == text
+
+
+def test_long_source_line_is_split_without_losing_its_line_reference() -> None:
+    chunks = PreprocessingService.split_into_chunks(
+        "abcdefghij",
+        evidence_id="E-007",
+        max_characters=4,
+        max_lines=10,
+        start_line=8,
+    )
+
+    assert [chunk.text for chunk in chunks] == ["abcd", "efgh", "ij"]
+    assert [chunk.source_range for chunk in chunks] == [
+        SourceRange(start_line=8, end_line=8),
+        SourceRange(start_line=8, end_line=8),
+        SourceRange(start_line=8, end_line=8),
+    ]
+    assert all(len(chunk.text) <= 4 for chunk in chunks)
+
+
+def test_chunking_is_deterministic_and_normalizes_input_once() -> None:
+    text = "\r\nfirst  \r\nsecond\r\n"
+
+    first_result = PreprocessingService.split_into_chunks(
+        text,
+        evidence_id="E-002",
+        max_characters=7,
+        max_lines=2,
+    )
+
+    assert (
+        PreprocessingService.split_into_chunks(
+            text,
+            evidence_id="E-002",
+            max_characters=7,
+            max_lines=2,
+        )
+        == first_result
+    )
+    assert "".join(chunk.text for chunk in first_result) == "first\nsecond"
+
+
+def test_empty_normalized_evidence_produces_no_chunks() -> None:
+    chunks = PreprocessingService.split_into_chunks(
+        " \t\r\n",
+        evidence_id="E-001",
+    )
+
+    assert chunks == []
+
+
+def test_chunking_rejects_blank_evidence_id() -> None:
+    with pytest.raises(ValueError, match="evidence_id must not be blank"):
+        PreprocessingService.split_into_chunks("evidence", evidence_id="  ")
+
+
+@pytest.mark.parametrize(
+    ("argument", "message"),
+    [
+        ({"max_characters": 0}, "max_characters must be positive"),
+        ({"max_lines": 0}, "max_lines must be positive"),
+        ({"start_line": 0}, "start_line must be positive"),
+    ],
+)
+def test_chunking_rejects_non_positive_bounds(
+    argument: dict[str, int],
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        PreprocessingService.split_into_chunks(
+            "evidence",
+            evidence_id="E-001",
+            **argument,
+        )

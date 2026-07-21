@@ -25,6 +25,8 @@ _EXPLICIT_TIME_CONFLICT_PATTERN = re.compile(
     r"\b(?:conflicting\s+timestamps?|timestamp\s+conflict)\b",
     re.IGNORECASE,
 )
+DEFAULT_CHUNK_MAX_CHARACTERS = 4_000
+DEFAULT_CHUNK_MAX_LINES = 100
 
 
 class StructuredTextError(ValueError):
@@ -70,6 +72,16 @@ class SourceRange:
         if self.start_line == self.end_line:
             return str(self.start_line)
         return f"{self.start_line}-{self.end_line}"
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceChunk:
+    """A bounded evidence segment retaining its source identity and lines."""
+
+    sequence: int
+    evidence_id: str
+    text: str
+    source_range: SourceRange
 
 
 def _reject_duplicate_json_keys(
@@ -217,11 +229,81 @@ class PreprocessingService:
         ]
 
     @classmethod
+    def split_into_chunks(
+        cls,
+        text: str,
+        *,
+        evidence_id: str,
+        max_characters: int = DEFAULT_CHUNK_MAX_CHARACTERS,
+        max_lines: int = DEFAULT_CHUNK_MAX_LINES,
+        start_line: int = 1,
+    ) -> list[EvidenceChunk]:
+        """Split normalized evidence into bounded, traceable chunks."""
+        if not evidence_id.strip():
+            raise ValueError("evidence_id must not be blank")
+        if max_characters < 1:
+            raise ValueError("max_characters must be positive")
+        if max_lines < 1:
+            raise ValueError("max_lines must be positive")
+
+        lines = cls._normalized_lines(text, start_line=start_line)
+        if not lines:
+            return []
+
+        normalized = "\n".join(lines)
+        chunks: list[EvidenceChunk] = []
+        offset = 0
+        current_line = start_line
+
+        while offset < len(normalized):
+            line_limited_end = cls._line_limited_end(
+                normalized,
+                start=offset,
+                max_lines=max_lines,
+            )
+            end = min(
+                offset + max_characters,
+                line_limited_end,
+                len(normalized),
+            )
+            chunk_text = normalized[offset:end]
+            newline_count = chunk_text.count("\n")
+            end_line = current_line + newline_count
+            if chunk_text.endswith("\n"):
+                end_line -= 1
+
+            chunks.append(
+                EvidenceChunk(
+                    sequence=len(chunks) + 1,
+                    evidence_id=evidence_id,
+                    text=chunk_text,
+                    source_range=SourceRange(
+                        start_line=current_line,
+                        end_line=end_line,
+                    ),
+                )
+            )
+            offset = end
+            current_line += newline_count
+
+        return chunks
+
+    @classmethod
     def _normalized_lines(cls, text: str, *, start_line: int) -> list[str]:
         if start_line < 1:
             raise ValueError("start_line must be positive")
         normalized = cls.normalize_text(text)
         return normalized.split("\n") if normalized else []
+
+    @staticmethod
+    def _line_limited_end(text: str, *, start: int, max_lines: int) -> int:
+        end = start
+        for _ in range(max_lines):
+            newline_index = text.find("\n", end)
+            if newline_index == -1:
+                return len(text)
+            end = newline_index + 1
+        return end
 
     @staticmethod
     def _parse_timestamp_match(
