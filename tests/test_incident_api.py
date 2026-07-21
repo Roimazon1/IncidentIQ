@@ -59,6 +59,46 @@ def test_incidents_can_be_created_reopened_and_listed(
     ]
 
 
+def test_dashboard_lists_saved_incidents_newest_first_with_statuses(
+    database_client: TestClient,
+) -> None:
+    database_client.post(
+        "/incidents",
+        data=_incident_form_data(),
+    )
+    database_client.post(
+        "/incidents",
+        data=_incident_form_data(
+            name="Payment <failures>",
+            affected_service="payments",
+        ),
+    )
+    database_client.post(
+        "/incidents/INC-000001/evidence/text",
+        data={
+            "source_name": "Checkout log",
+            "original_text": "Checkout failed",
+            "evidence_type": "APPLICATION_LOG",
+        },
+    )
+
+    response = database_client.get("/")
+
+    assert response.status_code == 200
+    assert "No incidents saved yet" not in response.text
+    assert "Payment &lt;failures&gt;" in response.text
+    assert "Payment <failures>" not in response.text
+    newest_position = response.text.index("INC-000002")
+    older_position = response.text.index("INC-000001")
+    assert newest_position < older_position
+    assert "DRAFT" in response.text[newest_position:older_position]
+    assert "READY" in response.text[older_position:]
+    assert "/incidents/INC-000002" in response.text
+    assert "/incidents/INC-000001" in response.text
+    assert "payments" in response.text
+    assert "checkout" in response.text
+
+
 def test_incident_update_persists_and_can_clear_reported_start_time(
     database_client: TestClient,
 ) -> None:

@@ -4,23 +4,68 @@
 
 {% block content %}
   <section aria-labelledby="dashboard-heading">
-    <div class="mb-4">
-      <h1 id="dashboard-heading" class="display-6 fw-semibold">Incident dashboard</h1>
-      <p class="lead text-body-secondary mb-0">
-        Organize incident evidence and evaluate possible explanations.
-      </p>
+    <div class="d-flex flex-wrap align-items-start justify-content-between gap-3 mb-4">
+      <div>
+        <h1 id="dashboard-heading" class="display-6 fw-semibold">Incident dashboard</h1>
+        <p class="lead text-body-secondary mb-0">
+          Organize incident evidence and evaluate possible explanations.
+        </p>
+      </div>
+      <a class="btn btn-primary" href="{{ url_for('new_incident_form') }}">
+        Create incident
+      </a>
     </div>
 
-    <div class="card dashboard-card border-0 shadow-sm">
-      <div class="card-body p-4">
-        <h2 class="h5 card-title">Start an investigation</h2>
-        <p class="card-text text-body-secondary">
-          Create an incident record before collecting and reviewing evidence.
-        </p>
-        <a class="btn btn-primary" href="{{ url_for('new_incident_form') }}">
-          Create incident
-        </a>
+    {% if incidents %}
+      <div class="card dashboard-card border-0 shadow-sm">
+        <div class="card-body p-0">
+          <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0">
+              <thead>
+                <tr>
+                  <th class="ps-4" scope="col">Incident</th>
+                  <th scope="col">Affected service</th>
+                  <th scope="col">Status</th>
+                  <th class="pe-4" scope="col">Created</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for incident in incidents %}
+                  <tr>
+                    <td class="ps-4">
+                      <a
+                        class="fw-semibold text-decoration-none"
+                        href="{{ url_for('incident_detail', public_id=incident.public_id) }}"
+                      >
+                        {{ incident.name }}
+                      </a>
+                      <div class="small text-body-secondary">{{ incident.public_id }}</div>
+                    </td>
+                    <td>{{ incident.affected_service }}</td>
+                    <td>
+                      <span class="badge text-bg-secondary">{{ incident.status.value }}</span>
+                    </td>
+                    <td class="pe-4">
+                      <time datetime="{{ incident.created_at.isoformat() }}">
+                        {{ incident.created_at.strftime('%Y-%m-%d %H:%M UTC') }}
+                      </time>
+                    </td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </div>
       </div>
-    </div>
+    {% else %}
+      <div class="card dashboard-card border-0 shadow-sm">
+        <div class="card-body p-4">
+          <h2 class="h5 card-title">No incidents saved yet</h2>
+          <p class="card-text text-body-secondary mb-0">
+            Create an incident record before collecting and reviewing evidence.
+          </p>
+        </div>
+      </div>
+    {% endif %}
   </section>
 {% endblock %}
