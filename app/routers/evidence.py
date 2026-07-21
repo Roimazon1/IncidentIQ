@@ -100,6 +100,39 @@ def new_evidence_form(
     )
 
 
+@router.get(
+    "/incidents/{public_id}/evidence/{evidence_code}",
+    response_class=HTMLResponse,
+)
+def evidence_preview(
+    request: Request,
+    public_id: str,
+    evidence_code: str,
+    session: DatabaseSession,
+) -> HTMLResponse:
+    """Render one saved evidence item and its original local content."""
+    try:
+        evidence = IngestionService(session).get_evidence_or_raise(
+            public_id,
+            evidence_code,
+        )
+    except EvidenceItemNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+
+    return templates.TemplateResponse(
+        request=request,
+        name="evidence_preview.html",
+        context={
+            "app_name": settings.app_name,
+            "incident": evidence.incident,
+            "evidence": evidence,
+        },
+    )
+
+
 @router.post(
     "/incidents/{public_id}/evidence/text",
     response_class=HTMLResponse,

@@ -101,5 +101,6 @@ The application currently provides environment-backed settings, SQLAlchemy
 engine and session wiring, incident creation and editing, pasted-text and
 multi-file evidence creation, a FastAPI dashboard, a health endpoint, local
 static assets, upload validation, evidence-type selection and correction, and
-automated tests. Evidence preprocessing and AI analysis belong to later tasks
-and are not implemented yet.
+saved original-evidence previews. Automated tests cover the current behavior.
+Evidence preprocessing and AI analysis belong to later tasks and are not
+implemented yet.

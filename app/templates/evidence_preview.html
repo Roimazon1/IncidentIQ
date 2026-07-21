@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+
+{% block title %}{{ evidence.evidence_code }} | {{ incident.public_id }} | {{ app_name }}{% endblock %}
+
+{% block content %}
+  <div class="d-flex flex-wrap align-items-start justify-content-between gap-3 mb-4">
+    <div>
+      <div class="text-body-secondary small">{{ incident.public_id }}</div>
+      <h1 class="h2 mb-1">Evidence {{ evidence.evidence_code }}</h1>
+      <p class="text-body-secondary mb-0">{{ evidence.source_name }}</p>
+    </div>
+    <div class="d-flex gap-2">
+      <a
+        class="btn btn-outline-primary"
+        href="{{ url_for('new_evidence_form', public_id=incident.public_id) }}"
+      >
+        Manage evidence
+      </a>
+      <a
+        class="btn btn-outline-secondary"
+        href="{{ url_for('incident_detail', public_id=incident.public_id) }}"
+      >
+        Incident details
+      </a>
+    </div>
+  </div>
+
+  <section class="card border-0 shadow-sm mb-4" aria-labelledby="metadata-heading">
+    <div class="card-body p-4">
+      <h2 class="h4" id="metadata-heading">Evidence metadata</h2>
+      <dl class="row mb-0">
+        <dt class="col-sm-3">Evidence code</dt>
+        <dd class="col-sm-9"><code>{{ evidence.evidence_code }}</code></dd>
+        <dt class="col-sm-3">Source name</dt>
+        <dd class="col-sm-9 text-break">{{ evidence.source_name }}</dd>
+        <dt class="col-sm-3">Evidence type</dt>
+        <dd class="col-sm-9">{{ evidence.evidence_type.value }}</dd>
+        <dt class="col-sm-3">SHA-256 checksum</dt>
+        <dd class="col-sm-9 text-break font-monospace mb-0">{{ evidence.checksum }}</dd>
+      </dl>
+    </div>
+  </section>
+
+  <section class="card border-0 shadow-sm" aria-labelledby="content-heading">
+    <div class="card-body p-4">
+      <h2 class="h4" id="content-heading">Original content</h2>
+      <p class="text-body-secondary">
+        This is the exact local evidence retained for traceability.
+      </p>
+      <pre class="bg-body-tertiary border rounded p-3 overflow-auto mb-0"><code>{{ evidence.original_text }}</code></pre>
+    </div>
+  </section>
+{% endblock %}

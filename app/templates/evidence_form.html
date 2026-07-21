@@ -152,7 +152,15 @@
                 >
                   <div class="col-md-5">
                     <div class="fw-semibold">
-                      <code>{{ evidence.evidence_code }}</code>
+                      <a
+                        href="{{ url_for(
+                          'evidence_preview',
+                          public_id=incident.public_id,
+                          evidence_code=evidence.evidence_code
+                        ) }}"
+                      >
+                        <code>{{ evidence.evidence_code }}</code>
+                      </a>
                       {{ evidence.source_name }}
                     </div>
                   </div>

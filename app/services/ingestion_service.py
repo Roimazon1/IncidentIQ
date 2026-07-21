@@ -8,7 +8,7 @@ from pathlib import PurePath
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import Session, load_only
+from sqlalchemy.orm import Session, joinedload, load_only
 
 from app.config import get_settings
 from app.models import EvidenceItem, EvidenceType, Incident
@@ -121,6 +121,28 @@ class IngestionService:
             .order_by(EvidenceItem.id)
         )
         return list(self.session.scalars(statement))
+
+    def get_evidence_or_raise(
+        self,
+        incident_public_id: str,
+        evidence_code: str,
+    ) -> EvidenceItem:
+        """Return one full evidence item scoped to its incident."""
+        evidence = self.session.scalar(
+            select(EvidenceItem)
+            .join(Incident)
+            .options(joinedload(EvidenceItem.incident))
+            .where(
+                Incident.public_id == incident_public_id,
+                EvidenceItem.evidence_code == evidence_code,
+            )
+        )
+        if evidence is None:
+            raise EvidenceItemNotFoundError(
+                f"Evidence {evidence_code} was not found for incident "
+                f"{incident_public_id}."
+            )
+        return evidence
 
     def update_evidence_metadata(
         self,
