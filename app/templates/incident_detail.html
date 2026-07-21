@@ -36,12 +36,20 @@
               </time>
             </dd>
           </dl>
-          <a
-            class="btn btn-outline-primary mt-4"
-            href="{{ url_for('new_evidence_form', public_id=incident.public_id) }}"
-          >
-            Add evidence
-          </a>
+          <div class="d-flex flex-wrap gap-2 mt-4">
+            <a
+              class="btn btn-outline-secondary"
+              href="{{ url_for('new_evidence_form', public_id=incident.public_id) }}?tab=saved"
+            >
+              View all evidence
+            </a>
+            <a
+              class="btn btn-outline-primary"
+              href="{{ url_for('new_evidence_form', public_id=incident.public_id) }}"
+            >
+              Add evidence
+            </a>
+          </div>
         </div>
       </section>
     </div>

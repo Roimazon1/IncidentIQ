@@ -21,7 +21,15 @@ from app.config import get_settings
 from app.database import get_db
 from app.models import EvidenceType, Incident
 from app.routers.validation import validation_messages
-from app.schemas.evidence import EvidenceCreate, EvidenceUpdate
+from app.schemas.evidence import (
+    EvidenceCreate,
+    EvidenceManifestSource,
+    EvidenceUpdate,
+)
+from app.services.evidence_manifest_service import (
+    EvidenceManifestService,
+    EvidencePreviewValidationError,
+)
 from app.services.incident_service import IncidentNotFoundError, IncidentService
 from app.services.ingestion_service import (
     SUPPORTED_UPLOAD_EXTENSIONS,
@@ -31,6 +39,7 @@ from app.services.ingestion_service import (
     EvidenceUploadValidationError,
     IngestionService,
 )
+from app.success_notices import SuccessNotice, add_success_notice
 from app.templating import templates
 
 
@@ -137,6 +146,59 @@ def evidence_preview(
     )
 
 
+@router.get(
+    "/incidents/{public_id}/evidence/{evidence_code}/redaction-preview",
+    response_class=HTMLResponse,
+)
+def redaction_preview(
+    request: Request,
+    public_id: str,
+    evidence_code: str,
+    session: DatabaseSession,
+) -> HTMLResponse:
+    """Render the outbound-safe redaction preview for one evidence item."""
+    try:
+        evidence = IngestionService(session).get_evidence_or_raise(
+            public_id,
+            evidence_code,
+        )
+        preview = EvidenceManifestService.build_redaction_preview(
+            EvidenceManifestSource(
+                evidence_code=evidence.evidence_code,
+                source_name=evidence.source_name,
+                evidence_type=evidence.evidence_type,
+                original_text=evidence.original_text,
+            )
+        )
+    except EvidenceItemNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except EvidencePreviewValidationError as exc:
+        return templates.TemplateResponse(
+            request=request,
+            name="redaction_preview_error.html",
+            context={
+                "app_name": settings.app_name,
+                "incident": evidence.incident,
+                "evidence_code": evidence.evidence_code,
+                "error_message": str(exc),
+            },
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        )
+
+    return templates.TemplateResponse(
+        request=request,
+        name="redaction_preview.html",
+        context={
+            "app_name": settings.app_name,
+            "incident": evidence.incident,
+            "preview": preview,
+        },
+    )
+
+
 @router.post(
     "/incidents/{public_id}/evidence/text",
     response_class=HTMLResponse,
@@ -149,7 +211,7 @@ def create_pasted_evidence(
     original_text: Annotated[str, Form()],
     evidence_type: Annotated[str, Form()] = EvidenceType.OTHER.value,
 ) -> Response:
-    """Validate and persist pasted text, then redirect to its incident."""
+    """Validate and persist pasted text, then show saved evidence."""
     service = IngestionService(session)
     values = {
         "source_name": source_name,
@@ -202,7 +264,10 @@ def create_pasted_evidence(
         )
 
     return RedirectResponse(
-        url=f"/incidents/{public_id}",
+        url=add_success_notice(
+            f"/incidents/{public_id}/evidence/new?tab=saved",
+            SuccessNotice.PASTED_EVIDENCE_CREATED,
+        ),
         status_code=status.HTTP_303_SEE_OTHER,
     )
 
@@ -218,7 +283,7 @@ def create_uploaded_evidence(
     files: Annotated[list[UploadFile], File()],
     evidence_type: Annotated[str, Form()] = EvidenceType.OTHER.value,
 ) -> Response:
-    """Validate and persist uploaded evidence, then redirect to the incident."""
+    """Validate and persist uploaded evidence, then show saved evidence."""
     values = {"upload_evidence_type": evidence_type}
     try:
         evidence_update = EvidenceUpdate(evidence_type=evidence_type)
@@ -274,7 +339,10 @@ def create_uploaded_evidence(
         )
 
     return RedirectResponse(
-        url=f"/incidents/{public_id}",
+        url=add_success_notice(
+            f"/incidents/{public_id}/evidence/new?tab=saved",
+            SuccessNotice.EVIDENCE_FILES_UPLOADED,
+        ),
         status_code=status.HTTP_303_SEE_OTHER,
     )
 
@@ -337,6 +405,9 @@ def update_evidence_type(
         )
 
     return RedirectResponse(
-        url=f"/incidents/{public_id}/evidence/new?tab=saved",
+        url=add_success_notice(
+            f"/incidents/{public_id}/evidence/new?tab=saved",
+            SuccessNotice.EVIDENCE_TYPE_UPDATED,
+        ),
         status_code=status.HTTP_303_SEE_OTHER,
     )

@@ -14,6 +14,29 @@ from tests.evidence_test_support import (
 )
 
 
+def test_incident_detail_has_distinct_evidence_navigation_actions(
+    database_client: TestClient,
+) -> None:
+    create_incident_through_api(database_client)
+    evidence_form_url = "/incidents/INC-000001/evidence/new"
+    saved_evidence_url = f"{evidence_form_url}?tab=saved"
+
+    detail_response = database_client.get("/incidents/INC-000001")
+
+    assert detail_response.status_code == 200
+    assert "View all evidence" in detail_response.text
+    assert "Add evidence" in detail_response.text
+    assert f'href="http://testserver{saved_evidence_url}"' in detail_response.text
+    assert f'href="http://testserver{evidence_form_url}"' in detail_response.text
+
+    saved_response = database_client.get(saved_evidence_url)
+    add_response = database_client.get(evidence_form_url)
+    assert_active_evidence_tab(saved_response, "saved")
+    assert_active_evidence_tab(add_response, "paste")
+    assert "Back to incident" in saved_response.text
+    assert "Back to incident" in add_response.text
+
+
 def test_evidence_preview_renders_metadata_and_escaped_original_content(
     database_client: TestClient,
     database_session_factory: sessionmaker[Session],
@@ -42,8 +65,13 @@ def test_evidence_preview_renders_metadata_and_escaped_original_content(
         "&lt;script&gt;unsafe&lt;/script&gt;\ncheckout &amp; payment" in response.text
     )
     assert original_text not in response.text
+    evidence_list_url = f"/incidents/{public_id}/evidence/new?tab=saved"
+    assert "Back to evidence list" in response.text
+    assert "Manage evidence" not in response.text
+    assert evidence_list_url in response.text
 
-    form_response = database_client.get(f"/incidents/{public_id}/evidence/new")
+    form_response = database_client.get(evidence_list_url)
+    assert_active_evidence_tab(form_response, "saved")
     assert f"/incidents/{public_id}/evidence/E-001" in form_response.text
 
 
@@ -116,7 +144,7 @@ def test_saved_evidence_type_can_be_corrected(
 
     assert response.status_code == 303
     assert response.headers["location"] == (
-        "/incidents/INC-000001/evidence/new?tab=saved"
+        "/incidents/INC-000001/evidence/new?tab=saved&notice=evidence-type-updated"
     )
     with database_session_factory() as session:
         saved_evidence = session.scalar(select(EvidenceItem))
@@ -125,6 +153,7 @@ def test_saved_evidence_type_can_be_corrected(
 
     form_response = database_client.get(response.headers["location"])
     assert form_response.status_code == 200
+    assert "Evidence type updated successfully." in form_response.text
     assert_active_evidence_tab(form_response, "saved")
     assert "Correct saved classifications" in form_response.text
     assert "E-001" in form_response.text

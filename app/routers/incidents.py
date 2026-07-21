@@ -21,6 +21,7 @@ from app.services.incident_service import (
     IncidentPersistenceError,
     IncidentService,
 )
+from app.success_notices import SuccessNotice, add_success_notice
 from app.templating import templates
 
 
@@ -159,7 +160,10 @@ def create_incident(
         )
 
     return RedirectResponse(
-        url=f"/incidents/{incident.public_id}",
+        url=add_success_notice(
+            f"/incidents/{incident.public_id}",
+            SuccessNotice.INCIDENT_CREATED,
+        ),
         status_code=status.HTTP_303_SEE_OTHER,
     )
 
@@ -258,6 +262,9 @@ def update_incident(
         )
 
     return RedirectResponse(
-        url=f"/incidents/{incident.public_id}",
+        url=add_success_notice(
+            f"/incidents/{incident.public_id}",
+            SuccessNotice.INCIDENT_UPDATED,
+        ),
         status_code=status.HTTP_303_SEE_OTHER,
     )

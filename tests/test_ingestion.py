@@ -84,7 +84,11 @@ def test_evidence_form_and_pasted_text_post_redirect_flow(
 
     form_response = database_client.get("/incidents/INC-000001/evidence/new")
     assert form_response.status_code == 200
-    assert "Add evidence" in form_response.text
+    assert "<title>Evidence | INC-000001 | IncidentIQ</title>" in form_response.text
+    assert '<h1 class="h2 mb-1">Evidence</h1>' in form_response.text
+    assert (
+        "Add, upload, or review evidence for Checkout failures." in form_response.text
+    )
     assert "Evidence text" in form_response.text
     assert 'type="file"' in form_response.text
     assert f'accept="{",".join(SUPPORTED_UPLOAD_EXTENSIONS)}"' in form_response.text
@@ -112,7 +116,13 @@ def test_evidence_form_and_pasted_text_post_redirect_flow(
         follow_redirects=False,
     )
     assert create_response.status_code == 303
-    assert create_response.headers["location"] == "/incidents/INC-000001"
+    assert create_response.headers["location"] == (
+        "/incidents/INC-000001/evidence/new?tab=saved&notice=pasted-evidence-created"
+    )
+    saved_response = database_client.get(create_response.headers["location"])
+    assert saved_response.status_code == 200
+    assert "Pasted evidence saved successfully." in saved_response.text
+    assert_active_evidence_tab(saved_response, "saved")
 
     with database_session_factory() as session:
         saved_evidence = session.scalar(select(EvidenceItem))
@@ -177,7 +187,13 @@ def test_multifile_upload_redirects_and_persists_each_file(
     )
 
     assert response.status_code == 303
-    assert response.headers["location"] == "/incidents/INC-000001"
+    assert response.headers["location"] == (
+        "/incidents/INC-000001/evidence/new?tab=saved&notice=evidence-files-uploaded"
+    )
+    saved_response = database_client.get(response.headers["location"])
+    assert saved_response.status_code == 200
+    assert "Evidence files uploaded successfully." in saved_response.text
+    assert_active_evidence_tab(saved_response, "saved")
     with database_session_factory() as session:
         saved_uploads = list(
             session.scalars(select(EvidenceItem).order_by(EvidenceItem.evidence_code))

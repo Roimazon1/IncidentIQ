@@ -54,12 +54,24 @@ def test_incidents_can_be_created_reopened_and_listed(
     )
 
     assert first_response.status_code == 303
-    assert first_response.headers["location"] == "/incidents/INC-000001"
+    assert first_response.headers["location"] == (
+        "/incidents/INC-000001?notice=incident-created"
+    )
     assert second_response.status_code == 303
-    assert second_response.headers["location"] == "/incidents/INC-000002"
+    assert second_response.headers["location"] == (
+        "/incidents/INC-000002?notice=incident-created"
+    )
 
-    detail_response = database_client.get("/incidents/INC-000001")
+    detail_response = database_client.get(first_response.headers["location"])
     assert detail_response.status_code == 200
+    assert "Incident created successfully." in detail_response.text
+    assert 'id="success-toast"' in detail_response.text
+    assert 'role="status"' in detail_response.text
+    assert 'aria-live="polite"' in detail_response.text
+    assert 'aria-atomic="true"' in detail_response.text
+    assert 'data-bs-autohide="true"' in detail_response.text
+    assert 'data-bs-dismiss="toast"' in detail_response.text
+    assert 'aria-label="Close"' in detail_response.text
     assert "Checkout failures" in detail_response.text
     assert "Intermittent checkout errors" in detail_response.text
     assert "DRAFT" in detail_response.text
@@ -194,9 +206,12 @@ def test_incident_update_persists_and_can_clear_reported_start_time(
     )
 
     assert update_response.status_code == 303
-    assert update_response.headers["location"] == "/incidents/INC-000001"
+    assert update_response.headers["location"] == (
+        "/incidents/INC-000001?notice=incident-updated"
+    )
 
-    detail_response = database_client.get("/incidents/INC-000001")
+    detail_response = database_client.get(update_response.headers["location"])
+    assert "Incident updated successfully." in detail_response.text
     assert "Updated investigation description" in detail_response.text
     assert "Not provided" in detail_response.text
 

@@ -11,7 +11,7 @@
   {% endfor %}
 {% endmacro %}
 
-{% block title %}Add evidence | {{ incident.public_id }} | {{ app_name }}{% endblock %}
+{% block title %}Evidence | {{ incident.public_id }} | {{ app_name }}{% endblock %}
 
 {% block content %}
   <div class="row justify-content-center">
@@ -19,14 +19,16 @@
       <div class="d-flex align-items-center justify-content-between mb-4">
         <div>
           <div class="text-body-secondary small">{{ incident.public_id }}</div>
-          <h1 class="h2 mb-1">Add evidence</h1>
-          <p class="text-body-secondary mb-0">{{ incident.name }}</p>
+          <h1 class="h2 mb-1">Evidence</h1>
+          <p class="text-body-secondary mb-0">
+            Add, upload, or review evidence for {{ incident.name }}.
+          </p>
         </div>
         <a
           class="btn btn-outline-secondary"
           href="{{ url_for('incident_detail', public_id=incident.public_id) }}"
         >
-          Cancel
+          Back to incident
         </a>
       </div>
 

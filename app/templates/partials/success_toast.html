@@ -1,0 +1,26 @@
+{% set success_notice = success_notice_message(
+  request.query_params.get(SUCCESS_NOTICE_QUERY_PARAMETER)
+) %}
+{% if success_notice %}
+  <div class="toast-container position-fixed top-0 end-0 p-3">
+    <div
+      class="toast align-items-center border-0 text-bg-success"
+      id="success-toast"
+      role="status"
+      aria-live="polite"
+      aria-atomic="true"
+      data-bs-autohide="true"
+      data-bs-delay="5000"
+    >
+      <div class="d-flex">
+        <div class="toast-body">{{ success_notice }}</div>
+        <button
+          class="btn-close btn-close-white me-2 m-auto"
+          type="button"
+          data-bs-dismiss="toast"
+          aria-label="Close"
+        ></button>
+      </div>
+    </div>
+  </div>
+{% endif %}
