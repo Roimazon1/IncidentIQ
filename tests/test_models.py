@@ -3,13 +3,14 @@
 from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy import String, create_engine
-from sqlalchemy.exc import StatementError
+from sqlalchemy import String, create_engine, inspect
+from sqlalchemy.exc import IntegrityError, StatementError
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 from app.models import (
     ClaimSupportStatus,
     EvidenceType,
+    Incident,
     IncidentStatus,
     TimestampMixin,
     UTCDateTime,
@@ -178,6 +179,100 @@ def test_utc_datetime_rejects_naive_values() -> None:
             session.add(record)
 
             with pytest.raises(StatementError, match="timezone-aware"):
+                session.commit()
+    finally:
+        engine.dispose()
+
+
+def test_incident_model_fields_and_constraints() -> None:
+    mapper = inspect(Incident)
+    columns = Incident.__table__.c
+
+    assert set(mapper.columns.keys()) == {
+        "id",
+        "public_id",
+        "name",
+        "description",
+        "affected_service",
+        "reported_start_time",
+        "status",
+        "created_at",
+        "updated_at",
+    }
+    assert not mapper.relationships
+    assert columns.id.primary_key is True
+    assert columns.public_id.nullable is False
+    assert columns.public_id.unique is True
+    assert columns.public_id.index is True
+    assert columns.name.nullable is False
+    assert columns.description.nullable is False
+    assert columns.affected_service.nullable is False
+    assert columns.reported_start_time.nullable is True
+    assert columns.status.nullable is False
+    assert columns.status.type.enum_class is IncidentStatus
+
+
+def test_incident_persists_with_defaults_and_utc_timestamps() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Incident.__table__.create(engine)
+    test_session_factory = sessionmaker(bind=engine)
+    reported_start_time = datetime(2025, 1, 1, 10, tzinfo=UTC)
+
+    try:
+        with test_session_factory() as session:
+            incident = Incident(
+                public_id="INC-000001",
+                name="Checkout failures",
+                description="Intermittent checkout errors",
+                affected_service="checkout",
+                reported_start_time=reported_start_time,
+            )
+            session.add(incident)
+            session.flush()
+            incident_id = incident.id
+            session.commit()
+
+        with test_session_factory() as session:
+            loaded_incident = session.get(Incident, incident_id)
+            assert loaded_incident is not None
+
+            assert loaded_incident.public_id == "INC-000001"
+            assert loaded_incident.name == "Checkout failures"
+            assert loaded_incident.description == "Intermittent checkout errors"
+            assert loaded_incident.affected_service == "checkout"
+            assert loaded_incident.reported_start_time == reported_start_time
+            assert loaded_incident.status is IncidentStatus.DRAFT
+            assert loaded_incident.created_at.tzinfo is UTC
+            assert loaded_incident.updated_at.tzinfo is UTC
+    finally:
+        engine.dispose()
+
+
+def test_incident_public_id_must_be_unique() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Incident.__table__.create(engine)
+    test_session_factory = sessionmaker(bind=engine)
+
+    try:
+        with test_session_factory() as session:
+            session.add_all(
+                [
+                    Incident(
+                        public_id="INC-000001",
+                        name="First incident",
+                        description="First description",
+                        affected_service="checkout",
+                    ),
+                    Incident(
+                        public_id="INC-000001",
+                        name="Second incident",
+                        description="Second description",
+                        affected_service="payments",
+                    ),
+                ]
+            )
+
+            with pytest.raises(IntegrityError):
                 session.commit()
     finally:
         engine.dispose()

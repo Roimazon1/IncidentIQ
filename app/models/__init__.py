@@ -1,12 +1,14 @@
 """Shared persistence model types and conventions."""
 
 from app.models.enums import ClaimSupportStatus, EvidenceType, IncidentStatus
+from app.models.incident import Incident
 from app.models.mixins import TimestampMixin, utc_now
 from app.models.types import UTCDateTime
 
 __all__ = [
     "ClaimSupportStatus",
     "EvidenceType",
+    "Incident",
     "IncidentStatus",
     "TimestampMixin",
     "UTCDateTime",
