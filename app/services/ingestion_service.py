@@ -1,14 +1,18 @@
 """Persistence service for incident evidence ingestion."""
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from hashlib import sha256
+from pathlib import PurePath
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.models import EvidenceItem, EvidenceType
+from app.config import get_settings
+from app.models import EvidenceItem, EvidenceType, Incident
+from app.models.evidence import SOURCE_NAME_MAX_LENGTH
 from app.models.identifiers import EVIDENCE_CODE_PREFIX, generate_evidence_code
 from app.schemas.evidence import EvidenceCreate
 from app.services.incident_service import IncidentService
@@ -18,7 +22,12 @@ class EvidencePersistenceError(RuntimeError):
     """Raised when an evidence item cannot be persisted safely."""
 
 
+class EvidenceUploadValidationError(ValueError):
+    """Raised when an uploaded file is unsafe or unsupported."""
+
+
 SUPPORTED_UPLOAD_EXTENSIONS = (".txt", ".log", ".json", ".csv", ".md")
+READABLE_TEXT_CONTROLS = {"\t", "\n", "\r"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,8 +41,18 @@ class EvidenceUpload:
 class IngestionService:
     """Create traceable evidence items within one database session."""
 
-    def __init__(self, session: Session) -> None:
+    def __init__(
+        self,
+        session: Session,
+        *,
+        max_upload_bytes: int | None = None,
+    ) -> None:
         self.session = session
+        self.max_upload_bytes = (
+            get_settings().max_upload_bytes
+            if max_upload_bytes is None
+            else max_upload_bytes
+        )
 
     def ingest_pasted_text(
         self,
@@ -41,8 +60,11 @@ class IngestionService:
         evidence_data: EvidenceCreate,
     ) -> EvidenceItem:
         """Persist original pasted text with a stable per-incident evidence code."""
+        incident = IncidentService(self.session).get_incident_or_raise(
+            incident_public_id
+        )
         return self._persist_evidence_items(
-            incident_public_id,
+            incident,
             [evidence_data],
             failure_message="The pasted evidence could not be saved.",
         )[0]
@@ -62,31 +84,94 @@ class IngestionService:
     ) -> list[EvidenceItem]:
         """Decode and persist an uploaded file batch in one transaction."""
         if not uploads:
-            raise ValueError("at least one uploaded evidence file is required")
-
-        evidence_data = [
-            EvidenceCreate(
-                source_name=upload.filename,
-                evidence_type=EvidenceType.OTHER,
-                original_text=upload.content.decode("utf-8"),
+            raise EvidenceUploadValidationError(
+                "At least one uploaded evidence file is required."
             )
-            for upload in uploads
-        ]
+
+        incident = IncidentService(self.session).get_incident_or_raise(
+            incident_public_id
+        )
+
+        evidence_data = [self._prepare_upload(upload) for upload in uploads]
         return self._persist_evidence_items(
-            incident_public_id,
+            incident,
             evidence_data,
             failure_message="The uploaded evidence could not be saved.",
         )
 
+    @staticmethod
+    def sanitize_filename(filename: str) -> str:
+        """Return a storage-safe basename for an uploaded source label."""
+        basename = PurePath(filename.replace("\\", "/")).name.strip()
+        sanitized = re.sub(r"[^A-Za-z0-9._-]+", "_", basename).strip("._")
+        if not sanitized:
+            raise EvidenceUploadValidationError(
+                "Uploaded evidence must include a valid filename."
+            )
+        if len(sanitized) > SOURCE_NAME_MAX_LENGTH:
+            raise EvidenceUploadValidationError(
+                "Uploaded filenames must be "
+                f"{SOURCE_NAME_MAX_LENGTH} characters or fewer."
+            )
+        return sanitized
+
+    @staticmethod
+    def validate_extension(filename: str) -> None:
+        """Reject filenames outside the locked text-extension allowlist."""
+        extension = PurePath(filename).suffix.lower()
+        if extension not in SUPPORTED_UPLOAD_EXTENSIONS:
+            supported = ", ".join(SUPPORTED_UPLOAD_EXTENSIONS)
+            raise EvidenceUploadValidationError(
+                f"{filename} has an unsupported extension. "
+                f"Supported extensions: {supported}."
+            )
+
+    def validate_size(self, filename: str, content: bytes) -> None:
+        """Reject content larger than the configured per-file byte limit."""
+        if len(content) > self.max_upload_bytes:
+            raise EvidenceUploadValidationError(
+                f"{filename} exceeds the maximum upload size of "
+                f"{self.max_upload_bytes} bytes."
+            )
+
+    @staticmethod
+    def decode_text(filename: str, content: bytes) -> str:
+        """Decode UTF-8 evidence and reject unreadable binary controls."""
+        try:
+            decoded = content.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise EvidenceUploadValidationError(
+                f"{filename} must contain valid UTF-8 text."
+            ) from exc
+
+        contains_binary_control = any(
+            ord(character) < 32 and character not in READABLE_TEXT_CONTROLS
+            for character in decoded
+        )
+        if contains_binary_control:
+            raise EvidenceUploadValidationError(
+                f"{filename} contains unreadable binary content."
+            )
+        return decoded
+
+    def _prepare_upload(self, upload: EvidenceUpload) -> EvidenceCreate:
+        sanitized = self.sanitize_filename(upload.filename)
+        self.validate_extension(sanitized)
+        self.validate_size(sanitized, upload.content)
+        return EvidenceCreate(
+            source_name=sanitized,
+            evidence_type=EvidenceType.OTHER,
+            original_text=self.decode_text(sanitized, upload.content),
+        )
+
     def _persist_evidence_items(
         self,
-        incident_public_id: str,
+        incident: Incident,
         evidence_data: Sequence[EvidenceCreate],
         *,
         failure_message: str,
     ) -> list[EvidenceItem]:
         incident_service = IncidentService(self.session)
-        incident = incident_service.get_incident_or_raise(incident_public_id)
         first_sequence = self._next_evidence_sequence(incident.id)
         evidence_items = [
             EvidenceItem(

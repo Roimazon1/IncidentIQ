@@ -26,6 +26,7 @@ from app.services.ingestion_service import (
     SUPPORTED_UPLOAD_EXTENSIONS,
     EvidencePersistenceError,
     EvidenceUpload,
+    EvidenceUploadValidationError,
     IngestionService,
 )
 from app.templating import templates
@@ -159,21 +160,41 @@ def create_uploaded_evidence(
     session: DatabaseSession,
     files: Annotated[list[UploadFile], File()],
 ) -> Response:
-    """Persist multiple uploaded evidence files, then redirect to the incident."""
+    """Validate and persist uploaded evidence, then redirect to the incident."""
     uploads = [
         EvidenceUpload(
             filename=uploaded_file.filename or "",
-            content=uploaded_file.file.read(),
+            content=uploaded_file.file.read(settings.max_upload_bytes + 1),
         )
         for uploaded_file in files
     ]
     try:
-        IngestionService(session).ingest_uploaded_files(public_id, uploads)
+        IngestionService(
+            session,
+            max_upload_bytes=settings.max_upload_bytes,
+        ).ingest_uploaded_files(public_id, uploads)
     except IncidentNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(exc),
         ) from exc
+    except (EvidenceUploadValidationError, ValidationError) as exc:
+        incident = IncidentService(session).get_incident_or_raise(public_id)
+        errors = (
+            [str(exc)]
+            if isinstance(exc, EvidenceUploadValidationError)
+            else validation_messages(exc)
+        )
+        return templates.TemplateResponse(
+            request=request,
+            name="evidence_form.html",
+            context=_evidence_form_context(
+                incident,
+                errors=errors,
+                values={"source_name": "Pasted text"},
+            ),
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        )
     except EvidencePersistenceError as exc:
         incident = IncidentService(session).get_incident_or_raise(public_id)
         return templates.TemplateResponse(
