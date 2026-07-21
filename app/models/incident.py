@@ -1,15 +1,21 @@
 """Incident persistence model."""
 
+from __future__ import annotations
+
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import Enum as SQLAlchemyEnum
 from sqlalchemy import String, Text
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
 from app.models.enums import IncidentStatus
 from app.models.mixins import TimestampMixin
 from app.models.types import UTCDateTime
+
+if TYPE_CHECKING:
+    from app.models.evidence import EvidenceItem
 
 
 INCIDENT_PUBLIC_ID_LENGTH = 10
@@ -52,4 +58,10 @@ class Incident(TimestampMixin, Base):
         ),
         default=IncidentStatus.DRAFT,
         nullable=False,
+    )
+
+    evidence_items: Mapped[list[EvidenceItem]] = relationship(
+        back_populates="incident",
+        cascade="all, delete-orphan",
+        single_parent=True,
     )
