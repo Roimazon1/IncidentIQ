@@ -8,6 +8,7 @@ import pytest
 
 from app.services.preprocessing_service import (
     PreprocessingService,
+    SourceRange,
     StructuredTextError,
 )
 
@@ -117,3 +118,55 @@ def test_non_structured_extension_uses_plain_text_normalization() -> None:
     )
 
     assert normalized == "ERROR checkout failed"
+
+
+def test_line_numbers_are_stable_and_preserve_internal_blank_lines() -> None:
+    original = "\r\nfirst line  \r\n\r\n\tthird line\t\r\n"
+
+    numbered = PreprocessingService.add_line_numbers(original)
+
+    assert numbered == "L0001: first line\nL0002:\nL0003: \tthird line"
+    assert original.startswith("\r\n")
+
+
+def test_line_numbering_is_deterministic() -> None:
+    text = "first\nsecond"
+
+    first_result = PreprocessingService.add_line_numbers(text)
+
+    assert PreprocessingService.add_line_numbers(text) == first_result
+
+
+def test_custom_start_line_coordinates_numbering_and_source_range() -> None:
+    text = "first\n\nthird"
+
+    numbered = PreprocessingService.add_line_numbers(text, start_line=7)
+    source_range = PreprocessingService.get_source_range(text, start_line=7)
+
+    assert numbered == "L0007: first\nL0008:\nL0009: third"
+    assert source_range == SourceRange(start_line=7, end_line=9)
+    assert source_range.label == "7-9"
+
+
+def test_single_line_source_range_has_concise_label() -> None:
+    source_range = PreprocessingService.get_source_range(
+        "one line",
+        start_line=4,
+    )
+
+    assert source_range == SourceRange(start_line=4, end_line=4)
+    assert source_range.label == "4"
+
+
+def test_empty_text_has_no_numbered_lines_or_source_range() -> None:
+    assert PreprocessingService.add_line_numbers(" \t\r\n") == ""
+    assert PreprocessingService.get_source_range(" \t\r\n") is None
+
+
+@pytest.mark.parametrize("start_line", [0, -1])
+def test_non_positive_start_line_is_rejected(start_line: int) -> None:
+    with pytest.raises(ValueError, match="start_line must be positive"):
+        PreprocessingService.add_line_numbers("evidence", start_line=start_line)
+
+    with pytest.raises(ValueError, match="start_line must be positive"):
+        PreprocessingService.get_source_range("evidence", start_line=start_line)
