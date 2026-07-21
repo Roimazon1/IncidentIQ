@@ -13,10 +13,13 @@
 
     <div class="card dashboard-card border-0 shadow-sm">
       <div class="card-body p-4">
-        <h2 class="h5 card-title">No incidents yet</h2>
-        <p class="card-text text-body-secondary mb-0">
-          Incident creation and evidence collection will be added in a later phase.
+        <h2 class="h5 card-title">Start an investigation</h2>
+        <p class="card-text text-body-secondary">
+          Create an incident record before collecting and reviewing evidence.
         </p>
+        <a class="btn btn-primary" href="{{ url_for('new_incident_form') }}">
+          Create incident
+        </a>
       </div>
     </div>
   </section>

@@ -97,7 +97,7 @@ Run only the application smoke tests:
 
 ## Current Status
 
-The Phase 1 scaffold currently provides environment-backed settings, SQLAlchemy
-engine and session wiring, a FastAPI dashboard, a health endpoint, local static
-assets, and smoke tests. Incident creation, evidence ingestion, and AI analysis
-belong to later phases and are not implemented yet.
+The application currently provides environment-backed settings, SQLAlchemy
+engine and session wiring, incident creation and editing, a FastAPI dashboard,
+a health endpoint, local static assets, and automated tests. Evidence ingestion
+and AI analysis belong to later tasks and are not implemented yet.
