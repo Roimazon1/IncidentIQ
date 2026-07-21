@@ -1,5 +1,6 @@
 fastapi[standard]
 sqlalchemy
+pydantic
 pydantic-settings
 pytest
 ruff
