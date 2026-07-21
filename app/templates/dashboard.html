@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard | {{ app_name }}{% endblock %}
+
+{% block content %}
+  <section aria-labelledby="dashboard-heading">
+    <div class="mb-4">
+      <h1 id="dashboard-heading" class="display-6 fw-semibold">Incident dashboard</h1>
+      <p class="lead text-body-secondary mb-0">
+        Organize incident evidence and evaluate possible explanations.
+      </p>
+    </div>
+
+    <div class="card dashboard-card border-0 shadow-sm">
+      <div class="card-body p-4">
+        <h2 class="h5 card-title">No incidents yet</h2>
+        <p class="card-text text-body-secondary mb-0">
+          Incident creation and evidence collection will be added in a later phase.
+        </p>
+      </div>
+    </div>
+  </section>
+{% endblock %}

@@ -15,29 +15,79 @@ and a human reviewer must confirm conclusions.
 
 ## Technology Stack
 
-- Python 3.13
+- Python 3.12+
 - FastAPI
 - SQLAlchemy
 - Pydantic
 - SQLite
 - Jinja2
-- Bootstrap 5
+- Bootstrap 5.3.8, vendored locally
 - Vanilla JavaScript
 - Pytest
 - Ruff
 
-## Local Setup
+## Prerequisites
+
+- Python 3.12 or newer
+- Windows PowerShell
+
+Run all commands below from the repository root.
+
+## Setup and Installation
 
 ```powershell
 python -m venv .venv
-.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
+.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
+
+The commands use the virtual environment's interpreter directly, so activating
+the environment is optional.
+
+## Configuration
+
+The application uses the defaults shown in `.env.example` and can start without
+a local `.env` file. To create a local configuration file, run this once when
+`.env` does not already exist:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+The default `AI_PROVIDER=fake` setting does not require an OpenAI API key. Keep
+real API keys only in the ignored `.env` file; never add them to `.env.example`.
 
 ## Run
 
-The application run command will be added after the initial scaffold is created.
+```powershell
+.venv\Scripts\python.exe -m uvicorn app.main:app --reload
+```
+
+Open `http://127.0.0.1:8000/` for the dashboard. The health endpoint is available
+at `http://127.0.0.1:8000/health`.
+
+## Test
+
+Run the current automated test suite:
+
+```powershell
+.venv\Scripts\python.exe -m pytest
+```
+
+Run only the application smoke tests:
+
+```powershell
+.venv\Scripts\python.exe -m pytest tests/test_smoke.py
+```
+
+## Lint
+
+```powershell
+.venv\Scripts\python.exe -m ruff check .
+```
 
 ## Current Status
 
-Project environment and repository initialization.
+The Phase 1 scaffold currently provides environment-backed settings, SQLAlchemy
+engine and session wiring, a FastAPI dashboard, a health endpoint, local static
+assets, and smoke tests. Incident creation, evidence ingestion, and AI analysis
+belong to later phases and are not implemented yet.
