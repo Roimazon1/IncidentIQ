@@ -17,6 +17,10 @@ from app.models.enums import (
     IncidentStatus,
 )
 from app.models.evidence import EvidenceItem
+from app.models.identifiers import (
+    generate_evidence_code,
+    generate_incident_public_id,
+)
 from app.models.incident import Incident
 from app.models.mixins import TimestampMixin, utc_now
 from app.models.report import Report
@@ -31,6 +35,8 @@ __all__ = [
     "EvidenceType",
     "Fact",
     "FactReviewStatus",
+    "generate_evidence_code",
+    "generate_incident_public_id",
     "Hypothesis",
     "HypothesisStatus",
     "Incident",
