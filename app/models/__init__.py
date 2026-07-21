@@ -19,6 +19,7 @@ from app.models.enums import (
 from app.models.evidence import EvidenceItem
 from app.models.incident import Incident
 from app.models.mixins import TimestampMixin, utc_now
+from app.models.report import Report
 from app.models.types import UTCDateTime
 
 __all__ = [
@@ -35,6 +36,7 @@ __all__ = [
     "Incident",
     "IncidentStatus",
     "RecommendedAction",
+    "Report",
     "TimestampMixin",
     "TimelineEvent",
     "UTCDateTime",

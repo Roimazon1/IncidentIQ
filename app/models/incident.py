@@ -17,6 +17,7 @@ from app.models.types import UTCDateTime
 if TYPE_CHECKING:
     from app.models.analysis import AnalysisRun
     from app.models.evidence import EvidenceItem
+    from app.models.report import Report
 
 
 INCIDENT_PUBLIC_ID_LENGTH = 10
@@ -70,4 +71,8 @@ class Incident(TimestampMixin, Base):
         back_populates="incident",
         cascade="all, delete-orphan",
         single_parent=True,
+    )
+    reports: Mapped[list[Report]] = relationship(
+        back_populates="incident",
+        passive_deletes=True,
     )

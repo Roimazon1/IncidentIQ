@@ -124,6 +124,7 @@ def test_analysis_models_expose_locked_fields_and_relationships() -> None:
         "facts",
         "hypotheses",
         "incident",
+        "reports",
         "timeline_events",
     }
     for model in (Fact, TimelineEvent, BiasFlag):

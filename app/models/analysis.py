@@ -33,6 +33,7 @@ from app.models.types import UTCDateTime
 
 if TYPE_CHECKING:
     from app.models.incident import Incident
+    from app.models.report import Report
 
 
 MODEL_NAME_MAX_LENGTH = 200
@@ -133,6 +134,11 @@ class AnalysisRun(Base):
         single_parent=True,
     )
     actions: Mapped[list[RecommendedAction]] = relationship(
+        back_populates="analysis_run",
+        cascade="all, delete-orphan",
+        single_parent=True,
+    )
+    reports: Mapped[list[Report]] = relationship(
         back_populates="analysis_run",
         cascade="all, delete-orphan",
         single_parent=True,
