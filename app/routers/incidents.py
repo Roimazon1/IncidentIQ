@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.database import get_db
 from app.models import Incident
+from app.routers.validation import validation_messages
 from app.schemas.incident import IncidentCreate, IncidentRead, IncidentUpdate
 from app.services.incident_service import (
     DEFAULT_INCIDENT_LIST_LIMIT,
@@ -24,10 +25,6 @@ from app.templating import templates
 router = APIRouter(prefix="/incidents", tags=["incidents"])
 settings = get_settings()
 DatabaseSession = Annotated[Session, Depends(get_db)]
-
-
-def _validation_messages(exc: ValidationError) -> list[str]:
-    return [error["msg"] for error in exc.errors()]
 
 
 def _incident_form_values(incident: Incident) -> dict[str, str]:
@@ -101,7 +98,7 @@ def create_incident(
             name="incident_form.html",
             context={
                 "app_name": settings.app_name,
-                "errors": _validation_messages(exc),
+                "errors": validation_messages(exc),
                 "values": values,
             },
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -196,7 +193,7 @@ def update_incident(
             context={
                 "app_name": settings.app_name,
                 "incident": incident,
-                "errors": _validation_messages(exc),
+                "errors": validation_messages(exc),
                 "values": values,
             },
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,

@@ -5,6 +5,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import get_settings
+from app.routers.evidence import router as evidence_router
 from app.routers.incidents import router as incidents_router
 from app.templating import APP_DIRECTORY, templates
 
@@ -18,6 +19,7 @@ app.mount(
     name="static",
 )
 app.include_router(incidents_router)
+app.include_router(evidence_router)
 
 
 @app.get("/", response_class=HTMLResponse)

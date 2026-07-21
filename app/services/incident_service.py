@@ -5,7 +5,10 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.models import EvidenceItem, Incident, IncidentStatus
-from app.models.identifiers import generate_incident_public_id
+from app.models.identifiers import (
+    INCIDENT_PUBLIC_ID_PREFIX,
+    generate_incident_public_id,
+)
 from app.schemas.incident import IncidentCreate, IncidentUpdate
 
 
@@ -126,6 +129,8 @@ class IncidentService:
     def _next_public_id(self) -> str:
         latest_public_id = self.session.scalar(select(func.max(Incident.public_id)))
         next_sequence = (
-            1 if latest_public_id is None else int(latest_public_id.removeprefix("INC-")) + 1
+            1
+            if latest_public_id is None
+            else int(latest_public_id.removeprefix(INCIDENT_PUBLIC_ID_PREFIX)) + 1
         )
         return generate_incident_public_id(next_sequence)

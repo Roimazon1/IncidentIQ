@@ -30,6 +30,12 @@
             <dt>Created</dt>
             <dd class="mb-0">{{ incident.created_at.isoformat() }}</dd>
           </dl>
+          <a
+            class="btn btn-outline-primary mt-4"
+            href="{{ url_for('new_pasted_evidence_form', public_id=incident.public_id) }}"
+          >
+            Add pasted evidence
+          </a>
         </div>
       </section>
     </div>

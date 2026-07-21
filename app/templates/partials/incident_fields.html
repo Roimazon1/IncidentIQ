@@ -5,7 +5,7 @@
     id="name"
     name="name"
     value="{{ values.get('name', '') }}"
-    maxlength="200"
+    maxlength="{{ INCIDENT_NAME_MAX_LENGTH }}"
     required
   >
 </div>
@@ -26,7 +26,7 @@
     id="affected_service"
     name="affected_service"
     value="{{ values.get('affected_service', '') }}"
-    maxlength="200"
+    maxlength="{{ AFFECTED_SERVICE_MAX_LENGTH }}"
     required
   >
 </div>

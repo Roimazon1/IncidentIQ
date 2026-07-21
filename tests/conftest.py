@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session, sessionmaker
 
 from app import models
-from app.database import create_database_engine
+from app.database import create_database_engine, get_db
 from app.main import app
 
 
@@ -37,3 +37,21 @@ def database_session_factory(
         yield test_session_factory
     finally:
         engine.dispose()
+
+
+@pytest.fixture
+def database_client(
+    database_session_factory: sessionmaker[Session],
+) -> Iterator[TestClient]:
+    """Provide an application client bound to the isolated test database."""
+
+    def override_get_db() -> Iterator[Session]:
+        with database_session_factory() as session:
+            yield session
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        with TestClient(app) as test_client:
+            yield test_client
+    finally:
+        app.dependency_overrides.clear()
