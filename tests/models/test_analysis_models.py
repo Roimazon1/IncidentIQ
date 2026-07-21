@@ -292,6 +292,90 @@ def test_complete_analysis_run_persists_structured_results_and_audit_data(
         assert action.evidence_codes == ["E-001"]
 
 
+def test_analysis_defaults_persist_across_structured_results(
+    model_session_factory: sessionmaker[Session],
+) -> None:
+    analysis_run = AnalysisRun(
+        model_name="fake-analysis-v1",
+        provider_name="fake",
+        facts=[
+            Fact(
+                claim="Checkout returned errors",
+                support_status=ClaimSupportStatus.SUPPORTED,
+                confidence=90,
+            )
+        ],
+        timeline_events=[
+            TimelineEvent(
+                description="Errors began",
+                confidence=80,
+            )
+        ],
+        hypotheses=[
+            Hypothesis(
+                rank=1,
+                title="Database pool exhaustion",
+                explanation="Connections may have been unavailable",
+                confidence=70,
+                recommended_test="Inspect pool metrics",
+                expected_true_result="Pool saturation is visible",
+                expected_false_result="Pool capacity remained available",
+            )
+        ],
+        actions=[
+            RecommendedAction(
+                description="Inspect database pool metrics",
+                priority="HIGH",
+                owner_role="Site reliability engineer",
+                expected_information="Whether the pool was saturated",
+                operational_risk="Low",
+            )
+        ],
+    )
+    incident = Incident(
+        public_id="INC-000001",
+        name="Checkout failures",
+        description="Intermittent checkout errors",
+        affected_service="checkout",
+        analysis_runs=[analysis_run],
+    )
+
+    with model_session_factory() as session:
+        session.add(incident)
+        session.flush()
+        analysis_run_id = analysis_run.id
+        session.commit()
+
+    with model_session_factory() as session:
+        loaded_run = session.get(AnalysisRun, analysis_run_id)
+        assert loaded_run is not None
+        assert loaded_run.prompt_versions == {}
+        assert loaded_run.input_evidence_codes == []
+        assert loaded_run.raw_response is None
+        assert loaded_run.error_message is None
+        assert loaded_run.status is AnalysisRunStatus.RUNNING
+        assert loaded_run.started_at.tzinfo is UTC
+        assert loaded_run.completed_at is None
+
+        fact = loaded_run.facts[0]
+        assert fact.evidence_codes == []
+        assert fact.supporting_excerpt is None
+        assert fact.human_status is FactReviewStatus.PENDING
+
+        timeline_event = loaded_run.timeline_events[0]
+        assert timeline_event.event_time is None
+        assert timeline_event.evidence_codes == []
+        assert timeline_event.is_inferred is False
+
+        hypothesis = loaded_run.hypotheses[0]
+        assert hypothesis.supporting_evidence_codes == []
+        assert hypothesis.contradicting_evidence_codes == []
+        assert hypothesis.missing_evidence == []
+        assert hypothesis.status is HypothesisStatus.UNTESTED
+
+        assert loaded_run.actions[0].evidence_codes == []
+
+
 def test_analysis_confidence_outside_locked_range_is_rejected(
     model_session_factory: sessionmaker[Session],
 ) -> None:
@@ -311,6 +395,41 @@ def test_analysis_confidence_outside_locked_range_is_rejected(
                         confidence=101,
                     )
                 ],
+            )
+        ],
+    )
+
+    with model_session_factory() as session:
+        session.add(incident)
+        with pytest.raises(IntegrityError):
+            session.commit()
+
+
+def test_hypothesis_rank_must_be_unique_within_analysis_run(
+    model_session_factory: sessionmaker[Session],
+) -> None:
+    duplicate_rank_hypotheses = [
+        Hypothesis(
+            rank=1,
+            title=title,
+            explanation="Possible explanation",
+            confidence=60,
+            recommended_test="Run a focused check",
+            expected_true_result="Supporting signal appears",
+            expected_false_result="Supporting signal is absent",
+        )
+        for title in ("First hypothesis", "Second hypothesis")
+    ]
+    incident = Incident(
+        public_id="INC-000001",
+        name="Checkout failures",
+        description="Intermittent checkout errors",
+        affected_service="checkout",
+        analysis_runs=[
+            AnalysisRun(
+                model_name="fake-analysis-v1",
+                provider_name="fake",
+                hypotheses=duplicate_rank_hypotheses,
             )
         ],
     )

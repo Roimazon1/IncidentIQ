@@ -112,6 +112,8 @@ def test_in_place_export_metadata_change_persists(
         session.add(report)
         session.flush()
         report_id = report.id
+        assert report.final_text is None
+        assert report.export_metadata == {}
         report.export_metadata["filename"] = "incident-report.md"
         session.commit()
 

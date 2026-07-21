@@ -74,6 +74,38 @@ def test_incident_persists_with_defaults_and_utc_timestamps(
         assert loaded_incident.updated_at.tzinfo is UTC
 
 
+def test_incident_update_persists_and_advances_updated_at(
+    model_session_factory: sessionmaker[Session],
+) -> None:
+    initial_updated_at = datetime(2020, 1, 1, tzinfo=UTC)
+
+    with model_session_factory() as session:
+        incident = Incident(
+            public_id="INC-000001",
+            name="Checkout failures",
+            description="Initial description",
+            affected_service="checkout",
+            updated_at=initial_updated_at,
+        )
+        session.add(incident)
+        session.flush()
+        incident_id = incident.id
+        session.commit()
+
+    with model_session_factory() as session:
+        incident = session.get(Incident, incident_id)
+        assert incident is not None
+        incident.description = "Updated investigation description"
+        session.commit()
+
+    with model_session_factory() as session:
+        updated_incident = session.get(Incident, incident_id)
+        assert updated_incident is not None
+        assert updated_incident.description == "Updated investigation description"
+        assert updated_incident.updated_at > initial_updated_at
+        assert updated_incident.updated_at.tzinfo is UTC
+
+
 def test_incident_public_id_must_be_unique(
     model_session_factory: sessionmaker[Session],
 ) -> None:
