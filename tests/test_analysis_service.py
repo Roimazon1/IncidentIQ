@@ -49,8 +49,8 @@ from app.services.analysis_service import (
     AnalysisRunTransitionError,
     AnalysisService,
     AnalysisStageOutputError,
-    build_configured_analysis_service,
 )
+from app.services.analysis_service_factory import build_configured_analysis_service
 from app.services.ai_provider import AIProviderExecutionError, build_ai_result
 from app.services.incident_service import IncidentNotFoundError
 from app.services.prompt_registry import PromptRegistry

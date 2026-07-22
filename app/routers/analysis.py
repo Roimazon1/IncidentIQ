@@ -17,8 +17,8 @@ from app.services.analysis_service import (
     AnalysisRunNotFoundError,
     AnalysisRunTransitionError,
     AnalysisService,
-    build_configured_analysis_service,
 )
+from app.services.analysis_service_factory import build_configured_analysis_service
 from app.services.incident_service import IncidentNotFoundError
 from app.templating import templates
 
