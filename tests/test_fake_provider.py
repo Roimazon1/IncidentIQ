@@ -119,6 +119,7 @@ def test_fake_provider_is_deterministic_and_returns_audited_typed_result() -> No
 def test_fake_provider_validates_response_fixtures_locally(
     fixture_name: str,
     expected_category: AIFailureCategory,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     provider = FakeAIProvider.from_file(FIXTURE_PATH, fixture_name)
 
@@ -131,6 +132,7 @@ def test_fake_provider_validates_response_fixtures_locally(
     assert error.details.audit.raw_response is not None
     assert error.details.audit.raw_response not in str(error)
     assert error.details.audit.raw_response not in repr(error)
+    assert error.details.audit.raw_response not in caplog.text
     assert "audit" not in error.details.model_dump()
     assert "raw_response" not in error.details.model_dump_json()
 

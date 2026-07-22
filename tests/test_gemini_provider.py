@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import socket
 from collections.abc import Callable
 from pathlib import Path
 from typing import TypedDict
@@ -46,6 +47,19 @@ from app.services.providers.gemini_provider import (
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "fake_ai_responses.json"
 SYSTEM_PROMPT = "Use only the supplied redacted evidence."
 TASK_PROMPT = "Produce a neutral summary with cited facts and explicit uncertainty."
+
+
+@pytest.fixture(autouse=True)
+def _enforce_offline_gemini_tests(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_MODEL", raising=False)
+
+    def reject_network(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("Gemini provider tests must not access the network")
+
+    monkeypatch.setattr(socket, "create_connection", reject_network)
+    monkeypatch.setattr(socket.socket, "connect", reject_network)
+    monkeypatch.setattr(socket.socket, "connect_ex", reject_network)
 
 
 class _FakeResponse(GeminiResponseProtocol):
@@ -110,9 +124,13 @@ class _FakeGeminiError(Exception):
         super().__init__(sensitive_message)
 
 
-def _valid_summary_response() -> str:
+def _fixture_response(fixture_name: str) -> str:
     fixture_bank = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
-    return fixture_bank["valid_summary"]["raw_response"]
+    return fixture_bank[fixture_name]["raw_response"]
+
+
+def _valid_summary_response() -> str:
+    return _fixture_response("valid_summary")
 
 
 def _resolve_prompt(reference: PromptReference) -> str:
@@ -202,15 +220,24 @@ def test_injected_client_receives_redacted_structured_request_only() -> None:
     raw_response = _valid_summary_response()
     client = _FakeClient([_FakeResponse(raw_response)])
     provider = _provider(client)
+    request = _summary_request()
 
-    result = provider.generate(_summary_request())
+    result = provider.generate(request)
 
     assert isinstance(provider, AIProvider)
     assert isinstance(result.output, SummaryOutputV1)
     assert result.audit.raw_response == raw_response
     assert result.metadata.provider_name == "gemini"
     assert result.metadata.model_name == "gemini-2.5-flash"
+    assert result.metadata.system_prompt == request.prompts.system
+    assert result.metadata.task_prompt == request.prompts.task
+    assert result.metadata.analysis_stage is AnalysisStage.SUMMARY
+    assert result.metadata.output_schema is OutputSchemaIdentifier.SUMMARY_V1
+    assert result.metadata.request_identifier == "req-001"
     assert result.metadata.attempt_count == 1
+    assert "audit" not in result.model_dump()
+    assert '"audit"' not in result.model_dump_json()
+    assert '"raw_response"' not in result.model_dump_json()
 
     call = client.recorded_models.calls[0]
     payload = json.loads(call["contents"])
@@ -279,6 +306,36 @@ def test_schema_invalid_response_retries_without_changing_request() -> None:
         == client.recorded_models.calls[1]["contents"]
     )
     assert invalid_response not in client.recorded_models.calls[1]["contents"]
+
+
+@pytest.mark.parametrize(
+    "fixture_name",
+    ["missing_fields", "out_of_range_confidence", "schema_invalid_output"],
+    ids=["missing-fields", "out-of-range-confidence", "extra-fields"],
+)
+def test_schema_validation_failures_exhaust_retries_safely(
+    fixture_name: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    raw_response = _fixture_response(fixture_name)
+    client = _FakeClient([_FakeResponse(raw_response), _FakeResponse(raw_response)])
+    delays: list[float] = []
+    provider = _provider(client, max_attempts=2, sleeper=delays.append)
+
+    with pytest.raises(AIProviderExecutionError) as error_info:
+        provider.generate(_summary_request())
+
+    error = error_info.value
+    public_failure = f"{error!s}\n{error!r}\n{error.details.model_dump_json()}"
+    assert len(client.recorded_models.calls) == 2
+    assert delays == [0.5]
+    assert error.details.category is AIFailureCategory.EXHAUSTED_RETRIES
+    assert error.details.audit is not None
+    assert error.details.audit.attempt_count == 2
+    assert error.details.audit.raw_response == raw_response
+    assert "audit" not in error.details.model_dump()
+    assert raw_response not in public_failure
+    assert raw_response not in caplog.text
 
 
 def test_timeout_retries_and_then_succeeds() -> None:
@@ -415,7 +472,9 @@ def test_unknown_provider_exception_fails_once_without_exposing_details(
     assert error.__cause__ is None
 
 
-def test_malformed_response_exhaustion_retains_internal_raw_audit() -> None:
+def test_malformed_response_exhaustion_retains_internal_raw_audit(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     latest_raw_response = '{"second":"sensitive malformed response"'
     client = _FakeClient([_FakeResponse("{"), _FakeResponse(latest_raw_response)])
     provider = _provider(client, max_attempts=2)
@@ -429,6 +488,7 @@ def test_malformed_response_exhaustion_retains_internal_raw_audit() -> None:
     assert error.details.audit.raw_response == latest_raw_response
     assert latest_raw_response not in str(error)
     assert latest_raw_response not in repr(error)
+    assert latest_raw_response not in caplog.text
     assert "audit" not in error.details.model_dump()
     assert "raw_response" not in error.details.model_dump_json()
 
