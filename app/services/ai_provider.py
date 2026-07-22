@@ -51,6 +51,23 @@ class AIProviderConfigurationError(ValueError):
         )
 
 
+class AIProviderExecutionError(RuntimeError):
+    """Safe provider-neutral failure with internal-only audit details."""
+
+    def __init__(self, details: AIFailureDetails) -> None:
+        self.details = details
+        super().__init__(details.explanation)
+
+    def __repr__(self) -> str:
+        """Exclude provider responses and other internal audit fields."""
+        return (
+            f"{type(self).__name__}("
+            f"category={self.details.category.value!r}, "
+            f"request_identifier={self.details.request_identifier!r}, "
+            f"explanation={self.details.explanation!r})"
+        )
+
+
 ProviderBuilder = Callable[[Settings], AIProvider]
 
 
