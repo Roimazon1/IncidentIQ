@@ -1,15 +1,18 @@
 """Lifecycle and provider-neutral stages for auditable analysis runs."""
 
 import json
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
+from pathlib import Path
 from typing import TypeVar
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload, selectinload
 
+from app.config import Settings
 from app.models import (
     AnalysisRun,
     AnalysisRunStatus,
@@ -40,12 +43,35 @@ from app.schemas.ai_provider import (
     SafeAIMetadata,
 )
 from app.schemas.evidence import EvidenceManifest, EvidenceManifestSource
-from app.services.ai_provider import AIProvider, AIProviderExecutionError
+from app.services.ai_provider import (
+    AIProvider,
+    AIProviderExecutionError,
+    AIProviderFactory,
+)
 from app.services.evidence_manifest_service import EvidenceManifestService
 from app.services.incident_service import IncidentService
+from app.services.prompt_registry import PromptRegistry
+from app.services.providers.fake_provider import FakeAIProvider
+from app.services.providers.gemini_provider import GeminiAIProvider
 
 
 StageOutputT = TypeVar("StageOutputT", bound=BaseModel)
+_FAKE_RESPONSE_FIXTURE_PATH = (
+    Path(__file__).resolve().parents[1] / "resources" / "fake_ai_core_responses.json"
+)
+_CORE_FAKE_FIXTURES = (
+    "valid_summary",
+    "valid_timeline",
+    "valid_hypotheses",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class AnalysisPageData:
+    """Safe structured data needed to render one saved analysis run."""
+
+    analysis_run: AnalysisRun
+    summary_output: SummaryOutputV1 | None
 
 
 class AnalysisEvidenceRequiredError(ValueError):
@@ -93,10 +119,32 @@ class AnalysisService:
         session: Session,
         *,
         ai_provider: AIProvider | None = None,
+        configured_provider_name: str | None = None,
+        configured_model_name: str | None = None,
     ) -> None:
         self.session = session
         self._incident_service = IncidentService(session)
         self._ai_provider = ai_provider
+        self._configured_provider_name = configured_provider_name
+        self._configured_model_name = configured_model_name
+
+    def start_configured_analysis_run(
+        self,
+        incident_public_id: str,
+    ) -> AnalysisRun:
+        """Start a run using the provider identity validated at service creation."""
+        if (
+            self._configured_provider_name is None
+            or self._configured_model_name is None
+        ):
+            raise AnalysisProviderRequiredError(
+                "A configured AI provider is required to start analysis."
+            )
+        return self.start_analysis_run(
+            incident_public_id,
+            provider_name=self._configured_provider_name,
+            model_name=self._configured_model_name,
+        )
 
     def start_analysis_run(
         self,
@@ -262,6 +310,50 @@ class AnalysisService:
             )
             raise
         return analysis_run
+
+    def run_core_analysis_to_terminal(self, run_id: int) -> AnalysisRun:
+        """Return a completed or safely retained failed run for an application flow."""
+        try:
+            return self.run_core_analysis(run_id)
+        except (
+            AIProviderExecutionError,
+            AnalysisStageOutputError,
+            AnalysisPersistenceError,
+        ):
+            analysis_run = self._get_analysis_run_or_raise(run_id)
+            if analysis_run.status is AnalysisRunStatus.FAILED:
+                return analysis_run
+            raise
+
+    def get_analysis_page_data(
+        self,
+        incident_public_id: str,
+        run_id: int,
+    ) -> AnalysisPageData:
+        """Load one incident-scoped run and its basic display relationships."""
+        analysis_run = self.session.scalar(
+            select(AnalysisRun)
+            .join(AnalysisRun.incident)
+            .options(
+                joinedload(AnalysisRun.incident),
+                selectinload(AnalysisRun.facts),
+                selectinload(AnalysisRun.timeline_events),
+                selectinload(AnalysisRun.hypotheses),
+            )
+            .where(
+                AnalysisRun.id == run_id,
+                Incident.public_id == incident_public_id,
+            )
+        )
+        if analysis_run is None:
+            raise AnalysisRunNotFoundError(
+                f"Analysis run {run_id} was not found for incident "
+                f"{incident_public_id}."
+            )
+        return AnalysisPageData(
+            analysis_run=analysis_run,
+            summary_output=self._extract_summary_output(analysis_run.raw_response),
+        )
 
     def run_summary_stage(self, run_id: int) -> AIResult[SummaryOutputV1]:
         """Run typed summary, fact, and assumption extraction on redacted evidence."""
@@ -598,6 +690,19 @@ class AnalysisService:
         )
 
     @staticmethod
+    def _extract_summary_output(raw_response: str | None) -> SummaryOutputV1 | None:
+        if raw_response is None:
+            return None
+        try:
+            audit_envelope = json.loads(raw_response)
+            parsed_output = audit_envelope["stages"][AnalysisStage.SUMMARY.value][
+                "parsed_output"
+            ]
+            return SummaryOutputV1.model_validate(parsed_output)
+        except (json.JSONDecodeError, KeyError, TypeError, ValidationError):
+            return None
+
+    @staticmethod
     def _parse_timeline_instant(value: str) -> datetime | None:
         candidate = f"{value[:-1]}+00:00" if value.endswith("Z") else value
         try:
@@ -710,3 +815,47 @@ class AnalysisService:
         except SQLAlchemyError as exc:
             self.session.rollback()
             raise AnalysisPersistenceError(failure_message) from exc
+
+
+def build_configured_analysis_service(
+    session: Session,
+    settings: Settings,
+) -> AnalysisService:
+    """Build an analysis service with the settings-selected concrete provider."""
+    prompt_registry = PromptRegistry()
+
+    def build_fake_provider(configured_settings: Settings) -> AIProvider:
+        del configured_settings
+        return FakeAIProvider.from_file_set(
+            _FAKE_RESPONSE_FIXTURE_PATH,
+            _CORE_FAKE_FIXTURES,
+            prompt_resolver=prompt_registry.resolve_content,
+            prompt_bundle_validator=prompt_registry.validate_bundle,
+        )
+
+    def build_gemini_provider(configured_settings: Settings) -> AIProvider:
+        return GeminiAIProvider.from_settings(
+            configured_settings,
+            prompt_resolver=prompt_registry.resolve_content,
+            prompt_bundle_validator=prompt_registry.validate_bundle,
+        )
+
+    provider = AIProviderFactory(
+        fake_builder=build_fake_provider,
+        gemini_builder=build_gemini_provider,
+    ).create(settings)
+    model_name = (
+        FakeAIProvider.model_name
+        if settings.ai_provider == FakeAIProvider.provider_name
+        else settings.gemini_model
+    )
+    if model_name is None:
+        raise AnalysisProviderRequiredError(
+            "A configured AI provider model is required to start analysis."
+        )
+    return AnalysisService(
+        session,
+        ai_provider=provider,
+        configured_provider_name=settings.ai_provider,
+        configured_model_name=model_name,
+    )

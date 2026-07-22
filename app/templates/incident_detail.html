@@ -37,6 +37,15 @@
             </dd>
           </dl>
           <div class="d-flex flex-wrap gap-2 mt-4">
+            <form method="post" action="{{ url_for('start_analysis', public_id=incident.public_id) }}">
+              <button
+                class="btn btn-primary"
+                type="submit"
+                {% if incident.status.value in ["DRAFT", "ANALYZING"] %}disabled{% endif %}
+              >
+                {% if incident.status.value == "ANALYZING" %}Analysis running{% else %}Run analysis{% endif %}
+              </button>
+            </form>
             <a
               class="btn btn-outline-secondary"
               href="{{ url_for('new_evidence_form', public_id=incident.public_id) }}?tab=saved"
@@ -50,6 +59,11 @@
               Add evidence
             </a>
           </div>
+          {% if incident.status.value == "DRAFT" %}
+            <p class="small text-body-secondary mt-2 mb-0">
+              Add evidence before running an analysis.
+            </p>
+          {% endif %}
         </div>
       </section>
     </div>

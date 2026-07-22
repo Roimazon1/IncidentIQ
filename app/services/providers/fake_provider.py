@@ -63,19 +63,19 @@ _FIXTURE_BANK_ADAPTER = TypeAdapter(dict[str, _FakeResponseFixture])
 
 
 class FakeAIProvider:
-    """Return one named fixture through the normal typed provider boundary."""
+    """Return configured fixtures through the normal typed provider boundary."""
 
     provider_name = "fake"
     model_name = "fixture-v1"
 
     def __init__(
         self,
-        fixture: _FakeResponseFixture,
+        fixtures: tuple[_FakeResponseFixture, ...],
         *,
         prompt_resolver: PromptResolver,
         prompt_bundle_validator: PromptBundleValidator,
     ) -> None:
-        self._fixture = fixture
+        self._fixtures = fixtures
         self._prompt_resolver = prompt_resolver
         self._prompt_bundle_validator = prompt_bundle_validator
 
@@ -89,24 +89,64 @@ class FakeAIProvider:
         prompt_bundle_validator: PromptBundleValidator,
     ) -> Self:
         """Load and validate a named fixture without environment or network access."""
-        try:
-            fixture_document = json.loads(path.read_text(encoding="utf-8"))
-            fixtures = _FIXTURE_BANK_ADAPTER.validate_python(fixture_document)
-        except (OSError, json.JSONDecodeError, ValidationError):
-            raise AIProviderConfigurationError(
-                "The fake AI response fixture file is invalid."
-            ) from None
-
+        fixtures = cls._load_fixture_bank(path)
         fixture = fixtures.get(fixture_name)
         if fixture is None:
             raise AIProviderConfigurationError(
                 "The requested fake AI response fixture is not registered."
             )
         return cls(
-            fixture,
+            (fixture,),
             prompt_resolver=prompt_resolver,
             prompt_bundle_validator=prompt_bundle_validator,
         )
+
+    @classmethod
+    def from_file_set(
+        cls,
+        path: Path,
+        fixture_names: tuple[str, ...],
+        *,
+        prompt_resolver: PromptResolver,
+        prompt_bundle_validator: PromptBundleValidator,
+    ) -> Self:
+        """Load one deterministic response fixture for each requested schema."""
+        fixture_bank = cls._load_fixture_bank(path)
+        selected_fixtures = tuple(
+            fixture_bank.get(fixture_name) for fixture_name in fixture_names
+        )
+        if not selected_fixtures or any(
+            fixture is None for fixture in selected_fixtures
+        ):
+            raise AIProviderConfigurationError(
+                "A requested fake AI response fixture is not registered."
+            )
+
+        typed_fixtures = tuple(
+            fixture for fixture in selected_fixtures if fixture is not None
+        )
+        output_schemas = [fixture.output_schema for fixture in typed_fixtures]
+        if any(output_schema is None for output_schema in output_schemas) or len(
+            output_schemas
+        ) != len(set(output_schemas)):
+            raise AIProviderConfigurationError(
+                "The fake AI response fixture set is invalid."
+            )
+        return cls(
+            typed_fixtures,
+            prompt_resolver=prompt_resolver,
+            prompt_bundle_validator=prompt_bundle_validator,
+        )
+
+    @staticmethod
+    def _load_fixture_bank(path: Path) -> dict[str, _FakeResponseFixture]:
+        try:
+            fixture_document = json.loads(path.read_text(encoding="utf-8"))
+            return _FIXTURE_BANK_ADAPTER.validate_python(fixture_document)
+        except (OSError, json.JSONDecodeError, ValidationError):
+            raise AIProviderConfigurationError(
+                "The fake AI response fixture file is invalid."
+            ) from None
 
     def generate(self, request: AIRequest) -> AIResult[AIOutput]:
         """Parse and validate the configured fixture as the requested output type."""
@@ -116,7 +156,13 @@ class FakeAIProvider:
             prompt_resolver=self._prompt_resolver,
             prompt_bundle_validator=self._prompt_bundle_validator,
         )
-        fixture = self._fixture
+        fixture = self._select_fixture(request)
+        if fixture is None:
+            raise_ai_provider_failure(
+                request=request,
+                category=AIFailureCategory.UNSUPPORTED_OUTPUT_SCHEMA,
+                attempt_count=1,
+            )
         if fixture.failure_category is not None:
             raise_ai_provider_failure(
                 request=request,
@@ -152,4 +198,16 @@ class FakeAIProvider:
             model_name=self.model_name,
             attempt_count=1,
             raw_response=raw_response,
+        )
+
+    def _select_fixture(self, request: AIRequest) -> _FakeResponseFixture | None:
+        if len(self._fixtures) == 1:
+            return self._fixtures[0]
+        return next(
+            (
+                fixture
+                for fixture in self._fixtures
+                if fixture.output_schema == request.output_schema.value
+            ),
+            None,
         )

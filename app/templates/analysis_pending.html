@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+
+{% block title %}Analysis {{ analysis_run.id }} | {{ app_name }}{% endblock %}
+
+{% block content %}
+  <section class="card border-0 shadow-sm" aria-labelledby="analysis-heading">
+    <div class="card-body p-4">
+      <div class="d-flex flex-wrap justify-content-between align-items-start gap-3">
+        <div>
+          <a class="small" href="{{ url_for('incident_detail', public_id=incident.public_id) }}">
+            {{ incident.public_id }}
+          </a>
+          <h1 class="h3 mb-1" id="analysis-heading">Analysis run {{ analysis_run.id }}</h1>
+          <p class="text-body-secondary mb-0">{{ incident.name }}</p>
+        </div>
+        <span class="badge text-bg-info">{{ analysis_run.status.value }}</span>
+      </div>
+
+      <div class="alert alert-info mt-4 mb-0" role="status">
+        The structured analysis is still running. Reload this page to see its saved result.
+      </div>
+
+      <dl class="row mt-4 mb-0">
+        <dt class="col-sm-3">Provider</dt>
+        <dd class="col-sm-9">{{ analysis_run.provider_name }}</dd>
+        <dt class="col-sm-3">Model</dt>
+        <dd class="col-sm-9">{{ analysis_run.model_name }}</dd>
+        <dt class="col-sm-3">Started</dt>
+        <dd class="col-sm-9 mb-0">
+          <time datetime="{{ analysis_run.started_at.isoformat() }}">
+            {{ analysis_run.started_at | incident_datetime }}
+          </time>
+        </dd>
+      </dl>
+    </div>
+  </section>
+{% endblock %}

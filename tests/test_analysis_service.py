@@ -11,6 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, selectinload, sessionmaker
 
+from app.config import Settings
 from app.models import (
     AnalysisRun,
     AnalysisRunStatus,
@@ -48,6 +49,7 @@ from app.services.analysis_service import (
     AnalysisRunTransitionError,
     AnalysisService,
     AnalysisStageOutputError,
+    build_configured_analysis_service,
 )
 from app.services.ai_provider import AIProviderExecutionError, build_ai_result
 from app.services.incident_service import IncidentNotFoundError
@@ -160,6 +162,48 @@ def _assert_no_stage_persistence(session: Session, run_id: int) -> None:
     assert session.scalar(select(func.count(Fact.id))) == 0
     assert session.scalar(select(func.count(TimelineEvent.id))) == 0
     assert session.scalar(select(func.count(Hypothesis.id))) == 0
+
+
+def test_configured_fake_analysis_loads_only_app_owned_runtime_fixtures(
+    service_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_read_text = Path.read_text
+    read_paths: list[Path] = []
+
+    def recording_read_text(
+        path: Path,
+        encoding: str | None = None,
+        errors: str | None = None,
+    ) -> str:
+        read_paths.append(path)
+        return original_read_text(path, encoding=encoding, errors=errors)
+
+    monkeypatch.setattr(Path, "read_text", recording_read_text)
+
+    service = build_configured_analysis_service(
+        service_session,
+        Settings.model_validate(
+            {
+                "ai_provider": "fake",
+                "gemini_api_key": None,
+                "gemini_model": None,
+            }
+        ),
+    )
+
+    runtime_fixture_paths = [
+        path for path in read_paths if path.name == "fake_ai_core_responses.json"
+    ]
+    expected_path = (
+        Path(__file__).resolve().parents[1]
+        / "app"
+        / "resources"
+        / "fake_ai_core_responses.json"
+    )
+    assert isinstance(service, AnalysisService)
+    assert runtime_fixture_paths == [expected_path]
+    assert all(part.casefold() != "tests" for part in expected_path.parts)
 
 
 def test_start_analysis_run_persists_running_lifecycle(
