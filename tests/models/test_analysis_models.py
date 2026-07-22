@@ -485,7 +485,7 @@ def test_provider_and_failure_metadata_persist(
     with model_session_factory() as session:
         analysis_run = AnalysisRun(
             model_name="external-analysis-v1",
-            provider_name="openai",
+            provider_name="gemini",
             raw_response='{"summary":"partial result"}',
             status=AnalysisRunStatus.FAILED,
             error_message="Structured response validation failed",
@@ -505,7 +505,7 @@ def test_provider_and_failure_metadata_persist(
     with model_session_factory() as session:
         loaded_run = session.get(AnalysisRun, analysis_run_id)
         assert loaded_run is not None
-        assert loaded_run.provider_name == "openai"
+        assert loaded_run.provider_name == "gemini"
         assert loaded_run.model_name == "external-analysis-v1"
         assert loaded_run.status is AnalysisRunStatus.FAILED
         assert loaded_run.error_message == "Structured response validation failed"

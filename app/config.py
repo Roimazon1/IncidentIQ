@@ -13,7 +13,8 @@ class Settings(BaseSettings):
     app_name: str = "IncidentIQ"
     database_url: str = "sqlite:///./incidentiq.db"
     ai_provider: str = "fake"
-    openai_api_key: SecretStr | None = None
+    gemini_api_key: SecretStr | None = None
+    gemini_model: str | None = None
     max_upload_bytes: int = Field(default=10_485_760, gt=0)
     display_timezone: str = "UTC"
     debug: bool = True

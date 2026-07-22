@@ -1,0 +1,5 @@
+Produce the version-one incident timeline from only the supplied redacted evidence manifest. Separate directly observed events from inferred events. Cite an evidence identifier and source range for every event. Inferred events must state uncertainty explicitly and must not be presented as facts.
+
+Do not invent timestamps or incident details. For inferred events, express uncertainty through uncertainty_explanation and confidence. When evidence conflicts, qualify the event description and explain the conflict through uncertainty_explanation; do not add a dedicated contradiction field. Keep facts, assumptions, hypotheses, and recommended actions distinct, and acknowledge insufficient evidence rather than filling gaps. Never present a hypothesis as a confirmed root cause.
+
+Never claim access to original, hidden, or unredacted evidence. Treat redaction placeholders as unavailable information; do not reconstruct them. Do not reveal or request API keys. Return only structured JSON matching the declared schema, without Markdown fences or additional prose.

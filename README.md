@@ -53,8 +53,9 @@ a local `.env` file. To create a local configuration file, run this once when
 Copy-Item .env.example .env
 ```
 
-The default `AI_PROVIDER=fake` setting does not require an OpenAI API key. Keep
-real API keys only in the ignored `.env` file; never add them to `.env.example`.
+The default `AI_PROVIDER=fake` setting does not require Gemini credentials. Keep
+the real `GEMINI_API_KEY` only in the ignored `.env` file; never add it to
+`.env.example`. Select the real Gemini model through `GEMINI_MODEL`.
 Set `DISPLAY_TIMEZONE` to an IANA timezone name such as `UTC` or
 `Asia/Jerusalem` to control how incident timestamps are displayed. Stored values
 and HTML `datetime` attributes remain ISO timestamps.

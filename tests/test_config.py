@@ -12,7 +12,8 @@ def test_defaults_and_local_dotenv_values_load(tmp_path) -> None:
         "APP_NAME=Local IncidentIQ\n"
         "DATABASE_URL=sqlite:///./local.db\n"
         "AI_PROVIDER=fake\n"
-        "OPENAI_API_KEY=\n"
+        "GEMINI_API_KEY=\n"
+        "GEMINI_MODEL=\n"
         "MAX_UPLOAD_BYTES=2048\n"
         "DISPLAY_TIMEZONE=Asia/Jerusalem\n"
         "DEBUG=false\n"
@@ -25,8 +26,9 @@ def test_defaults_and_local_dotenv_values_load(tmp_path) -> None:
     assert settings.app_name == "Local IncidentIQ"
     assert settings.database_url == "sqlite:///./local.db"
     assert settings.ai_provider == "fake"
-    assert settings.openai_api_key is not None
-    assert settings.openai_api_key.get_secret_value() == ""
+    assert settings.gemini_api_key is not None
+    assert settings.gemini_api_key.get_secret_value() == ""
+    assert settings.gemini_model == ""
     assert settings.max_upload_bytes == 2048
     assert settings.display_timezone == "Asia/Jerusalem"
     assert settings.debug is False
@@ -56,15 +58,17 @@ def test_environment_variables_override_defaults(monkeypatch) -> None:
     assert settings.display_timezone == "America/New_York"
 
 
-def test_fake_provider_accepts_an_empty_api_key(monkeypatch) -> None:
+def test_fake_provider_accepts_empty_gemini_settings(monkeypatch) -> None:
     monkeypatch.setenv("AI_PROVIDER", "fake")
-    monkeypatch.setenv("OPENAI_API_KEY", "")
+    monkeypatch.setenv("GEMINI_API_KEY", "")
+    monkeypatch.setenv("GEMINI_MODEL", "")
 
     settings = Settings(_env_file=None)
 
     assert settings.ai_provider == "fake"
-    assert settings.openai_api_key is not None
-    assert settings.openai_api_key.get_secret_value() == ""
+    assert settings.gemini_api_key is not None
+    assert settings.gemini_api_key.get_secret_value() == ""
+    assert settings.gemini_model == ""
 
 
 def test_invalid_max_upload_bytes_is_rejected(monkeypatch) -> None:

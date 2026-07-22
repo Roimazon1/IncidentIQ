@@ -1,0 +1,32 @@
+{
+  "valid_summary": {
+    "output_schema": "summary_v1",
+    "raw_response": "{\"summary\":{\"text\":\"Checkout requests are failing.\",\"impact\":\"Some customers cannot complete checkout.\",\"uncertainty\":\"The frequency and root cause are not yet verified.\"},\"facts\":[{\"claim\":\"The redacted checkout log contains a failure.\",\"evidence\":[{\"evidence_id\":\"E-001\",\"line_range\":\"1-2\",\"excerpt\":\"checkout failed\"}],\"confidence\":90}],\"assumptions\":[{\"claim\":\"A deployment may be related.\",\"reason\":\"The available evidence is incomplete.\",\"required_evidence\":[\"Compare pre-deployment behavior.\"]}],\"unknowns\":[\"The root cause is not verified.\"]}"
+  },
+  "valid_complete_output": {
+    "output_schema": "complete_analysis_v1",
+    "raw_response": "{\"summary\":{\"text\":\"Checkout requests are failing.\",\"impact\":\"Some customers cannot complete checkout.\",\"uncertainty\":\"The root cause is not verified.\"},\"facts\":[],\"assumptions\":[],\"timeline\":[],\"hypotheses\":[{\"hypothesis_id\":\"H-001\",\"rank\":1,\"title\":\"Possible cause 1\",\"explanation\":\"This explanation is plausible but unconfirmed.\",\"confidence\":60,\"supporting_evidence\":[{\"reference\":{\"evidence_id\":\"E-001\",\"line_range\":\"1-2\"},\"relevance\":\"The failure is consistent with this explanation.\"}],\"contradicting_evidence\":[],\"missing_evidence\":[\"A controlled comparison is missing.\"],\"validation_test\":{\"description\":\"Compare behavior.\",\"expected_if_true\":\"Failures correlate.\",\"expected_if_false\":\"Failures do not correlate.\"},\"risk_of_acting\":\"Acting early may disrupt service.\"},{\"hypothesis_id\":\"H-002\",\"rank\":2,\"title\":\"Possible cause 2\",\"explanation\":\"This explanation is plausible but unconfirmed.\",\"confidence\":50,\"supporting_evidence\":[{\"reference\":{\"evidence_id\":\"E-001\",\"line_range\":\"1-2\"},\"relevance\":\"The failure is consistent with this explanation.\"}],\"contradicting_evidence\":[],\"missing_evidence\":[\"A controlled comparison is missing.\"],\"validation_test\":{\"description\":\"Compare behavior.\",\"expected_if_true\":\"Failures correlate.\",\"expected_if_false\":\"Failures do not correlate.\"},\"risk_of_acting\":\"Acting early may disrupt service.\"},{\"hypothesis_id\":\"H-003\",\"rank\":3,\"title\":\"Possible cause 3\",\"explanation\":\"This explanation is plausible but unconfirmed.\",\"confidence\":40,\"supporting_evidence\":[{\"reference\":{\"evidence_id\":\"E-001\",\"line_range\":\"1-2\"},\"relevance\":\"The failure is consistent with this explanation.\"}],\"contradicting_evidence\":[],\"missing_evidence\":[\"A controlled comparison is missing.\"],\"validation_test\":{\"description\":\"Compare behavior.\",\"expected_if_true\":\"Failures correlate.\",\"expected_if_false\":\"Failures do not correlate.\"},\"risk_of_acting\":\"Acting early may disrupt service.\"}],\"actions\":[],\"open_questions\":[\"What changed before the incident?\"],\"reasoning_risks\":[],\"critic\":{\"findings\":[{\"concern\":\"A claim may be overstated.\",\"affected_claim\":\"Top hypothesis\",\"evidence\":[],\"impact\":\"The investigation may anchor too early.\",\"recommendation\":\"Run the validation test.\"}],\"ignored_evidence\":[],\"alternative_hypothesis\":null,\"ranking_rationale\":\"Multiple explanations remain possible.\"}}"
+  },
+  "invalid_json": {
+    "output_schema": "summary_v1",
+    "raw_response": "{\"summary\":"
+  },
+  "missing_fields": {
+    "output_schema": "summary_v1",
+    "raw_response": "{}"
+  },
+  "out_of_range_confidence": {
+    "output_schema": "summary_v1",
+    "raw_response": "{\"summary\":{\"text\":\"Checkout requests are failing.\",\"impact\":\"Some customers cannot complete checkout.\",\"uncertainty\":\"The root cause is not verified.\"},\"facts\":[{\"claim\":\"A failure appears in the log.\",\"evidence\":[{\"evidence_id\":\"E-001\",\"line_range\":\"1-2\"}],\"confidence\":101}],\"assumptions\":[],\"unknowns\":[]}"
+  },
+  "schema_invalid_output": {
+    "output_schema": "summary_v1",
+    "raw_response": "{\"summary\":{\"text\":\"Checkout requests are failing.\",\"impact\":\"Some customers cannot complete checkout.\",\"uncertainty\":\"The root cause is not verified.\",\"unexpected\":\"forbidden\"},\"facts\":[],\"assumptions\":[],\"unknowns\":[]}"
+  },
+  "simulated_recoverable_failure": {
+    "failure_category": "transient_provider_failure"
+  },
+  "simulated_non_recoverable_failure": {
+    "failure_category": "authentication"
+  }
+}
