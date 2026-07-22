@@ -1,4 +1,4 @@
-"""Public lifecycle and orchestration facade for Phase 6 analysis runs."""
+"""Public lifecycle and orchestration facade for analysis runs."""
 
 from dataclasses import dataclass
 from typing import TypeVar
@@ -16,6 +16,7 @@ from app.models import (
     IncidentStatus,
 )
 from app.schemas.ai_outputs import (
+    CriticOutputV1,
     HypothesesOutputV1,
     SummaryOutputV1,
     TimelineOutputV1,
@@ -23,6 +24,7 @@ from app.schemas.ai_outputs import (
 from app.schemas.ai_provider import (
     AIResult,
     AnalysisStage,
+    CriticContextV1,
     OutputSchemaIdentifier,
     PromptName,
     PromptVersion,
@@ -51,6 +53,7 @@ class AnalysisPageData:
 
     analysis_run: AnalysisRun
     summary_output: SummaryOutputV1 | None
+    critic_output: CriticOutputV1 | None
 
 
 class AnalysisAlreadyRunningError(RuntimeError):
@@ -229,6 +232,25 @@ class AnalysisService:
             stage_records[AnalysisStage.HYPOTHESES.value] = (
                 self._result_persistence.build_success_stage_record(hypotheses_result)
             )
+
+            current_stage = AnalysisStage.CRITIC
+            prompt_versions[PromptName.CRITIC.value] = PromptVersion.V1.value
+            critic_result = self._stage_runner.execute_stage(
+                analysis_run,
+                evidence_manifest,
+                task_prompt=PromptName.CRITIC,
+                analysis_stage=AnalysisStage.CRITIC,
+                output_schema=OutputSchemaIdentifier.CRITIC_V1,
+                output_type=CriticOutputV1,
+                critic_context=CriticContextV1(
+                    summary=summary_result.output,
+                    timeline=timeline_result.output,
+                    hypotheses=hypotheses_result.output,
+                ),
+            )
+            stage_records[AnalysisStage.CRITIC.value] = (
+                self._result_persistence.build_success_stage_record(critic_result)
+            )
         except AIProviderExecutionError as exc:
             stage_records[current_stage.value] = (
                 self._result_persistence.build_provider_failure_stage_record(exc)
@@ -320,6 +342,9 @@ class AnalysisService:
             summary_output=self._result_persistence.extract_summary_output(
                 analysis_run.raw_response
             ),
+            critic_output=self._result_persistence.extract_critic_output(
+                analysis_run.raw_response
+            ),
         )
 
     def run_summary_stage(self, run_id: int) -> AIResult[SummaryOutputV1]:
@@ -357,6 +382,23 @@ class AnalysisService:
         self._stage_runner.require_materially_distinct_hypotheses(result.output)
         return result
 
+    def run_critic_stage(
+        self,
+        run_id: int,
+        *,
+        critic_context: CriticContextV1,
+    ) -> AIResult[CriticOutputV1]:
+        """Run a typed adversarial pass without changing original stage outputs."""
+        return self._run_stage(
+            run_id,
+            operation="run adversarial critique",
+            task_prompt=PromptName.CRITIC,
+            analysis_stage=AnalysisStage.CRITIC,
+            output_schema=OutputSchemaIdentifier.CRITIC_V1,
+            output_type=CriticOutputV1,
+            critic_context=critic_context,
+        )
+
     def _run_stage(
         self,
         run_id: int,
@@ -366,6 +408,7 @@ class AnalysisService:
         analysis_stage: AnalysisStage,
         output_schema: OutputSchemaIdentifier,
         output_type: type[StageOutputT],
+        critic_context: CriticContextV1 | None = None,
     ) -> AIResult[StageOutputT]:
         analysis_run = self._get_analysis_run_or_raise(run_id)
         self._require_running(analysis_run, operation=operation)
@@ -377,6 +420,7 @@ class AnalysisService:
             analysis_stage=analysis_stage,
             output_schema=output_schema,
             output_type=output_type,
+            critic_context=critic_context,
         )
 
     def _persist_failed_analysis(

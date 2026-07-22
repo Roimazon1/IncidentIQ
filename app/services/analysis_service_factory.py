@@ -20,6 +20,7 @@ _CORE_FAKE_FIXTURES = (
     "valid_summary",
     "valid_timeline",
     "valid_hypotheses",
+    "valid_critic",
 )
 
 

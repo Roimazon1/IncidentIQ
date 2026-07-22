@@ -13,6 +13,7 @@ from app.schemas.ai_provider import (
     AIRequest,
     AIResult,
     AnalysisStage,
+    CriticContextV1,
     OutputSchemaIdentifier,
     PromptBundle,
     PromptName,
@@ -102,6 +103,7 @@ class AnalysisStageRunner:
         analysis_stage: AnalysisStage,
         output_schema: OutputSchemaIdentifier,
         output_type: type[StageOutputT],
+        critic_context: CriticContextV1 | None = None,
     ) -> AIResult[StageOutputT]:
         """Execute one typed stage and enforce exact request/result traceability."""
         request = self._build_stage_request(
@@ -110,6 +112,7 @@ class AnalysisStageRunner:
             task_prompt=task_prompt,
             analysis_stage=analysis_stage,
             output_schema=output_schema,
+            critic_context=critic_context,
         )
         result = self._require_ai_provider().generate(request)
         return self._validate_stage_result(
@@ -181,6 +184,7 @@ class AnalysisStageRunner:
         task_prompt: PromptName,
         analysis_stage: AnalysisStage,
         output_schema: OutputSchemaIdentifier,
+        critic_context: CriticContextV1 | None = None,
     ) -> AIRequest:
         manifest_checksum = sha256(
             evidence_manifest.model_dump_json().encode("utf-8")
@@ -198,6 +202,7 @@ class AnalysisStageRunner:
                 ),
             ),
             output_schema=output_schema,
+            critic_context=critic_context,
             metadata=SafeAIMetadata(
                 request_identifier=(
                     f"analysis-run-{analysis_run.id}-{analysis_stage.value}"

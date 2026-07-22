@@ -15,6 +15,11 @@ from pydantic import (
     model_validator,
 )
 
+from app.schemas.ai_outputs import (
+    HypothesesOutputV1,
+    SummaryOutputV1,
+    TimelineOutputV1,
+)
 from app.schemas.evidence import EvidenceManifest, Sha256Checksum
 from app.schemas.incident import IncidentPublicId
 
@@ -137,13 +142,34 @@ class SafeAIMetadata(StrictAIContract):
     evidence_manifest_checksum: Sha256Checksum | None = None
 
 
+class CriticContextV1(StrictAIContract):
+    """Validated initial analysis supplied separately to the critic stage."""
+
+    summary: SummaryOutputV1
+    timeline: TimelineOutputV1
+    hypotheses: HypothesesOutputV1
+
+
 class AIRequest(StrictAIContract):
-    """Redacted-only input accepted by any IncidentIQ AI provider."""
+    """Typed, provider-neutral input accepted by an IncidentIQ AI provider."""
 
     evidence_manifest: EvidenceManifest
     prompts: PromptBundle
     output_schema: OutputSchemaIdentifier
     metadata: SafeAIMetadata
+    critic_context: CriticContextV1 | None = None
+
+    @model_validator(mode="after")
+    def validate_critic_context_role(self) -> AIRequest:
+        """Require validated initial output only for adversarial critic calls."""
+        is_critic_request = self.metadata.analysis_stage is AnalysisStage.CRITIC
+        if is_critic_request and self.critic_context is None:
+            raise ValueError(
+                "critic requests require validated initial analysis context"
+            )
+        if not is_critic_request and self.critic_context is not None:
+            raise ValueError("critic context is only accepted for critic requests")
+        return self
 
 
 class AIResultMetadata(StrictAIContract):

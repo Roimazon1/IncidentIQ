@@ -28,6 +28,7 @@ from app.models import (
 )
 from app.schemas.ai_outputs import (
     AIOutput,
+    CriticOutputV1,
     HypothesesOutputV1,
     SummaryOutputV1,
     TimelineOutputV1,
@@ -37,6 +38,7 @@ from app.schemas.ai_provider import (
     AIRequest,
     AIResult,
     AnalysisStage,
+    CriticContextV1,
     OutputSchemaIdentifier,
     PromptName,
     PromptReference,
@@ -145,12 +147,28 @@ def _recording_core_provider(
         OutputSchemaIdentifier.SUMMARY_V1: _fixture_provider("valid_summary"),
         OutputSchemaIdentifier.TIMELINE_V1: _fixture_provider(timeline_fixture),
         OutputSchemaIdentifier.HYPOTHESES_V1: _fixture_provider("valid_hypotheses"),
+        OutputSchemaIdentifier.CRITIC_V1: _fixture_provider("valid_critic"),
     }
 
     def generate(request: AIRequest) -> AIResult[AIOutput]:
         return providers[request.output_schema].generate(request)
 
     return _RecordingProvider(generate)
+
+
+def _critic_context() -> CriticContextV1:
+    fixture_bank = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+    return CriticContextV1(
+        summary=SummaryOutputV1.model_validate_json(
+            fixture_bank["valid_summary"]["raw_response"]
+        ),
+        timeline=TimelineOutputV1.model_validate_json(
+            fixture_bank["valid_timeline"]["raw_response"]
+        ),
+        hypotheses=HypothesesOutputV1.model_validate_json(
+            fixture_bank["valid_hypotheses"]["raw_response"]
+        ),
+    )
 
 
 def _assert_no_stage_persistence(session: Session, run_id: int) -> None:
@@ -694,6 +712,46 @@ def test_hypotheses_stage_rejects_materially_duplicate_titles_without_persistenc
     _assert_no_stage_persistence(service_session, analysis_run.id)
 
 
+def test_critic_stage_returns_separate_typed_redacted_result(
+    service_session: Session,
+) -> None:
+    secret = "sk-production-secret-1234"
+    incident = _persist_incident(
+        service_session,
+        original_text=f"api_key={secret}\nCheckout failed",
+    )
+    provider = _recording_stage_provider("valid_critic")
+    service = AnalysisService(service_session, ai_provider=provider)
+    analysis_run = _start_run(service, incident.public_id)
+
+    critic_context = _critic_context()
+    result = service.run_critic_stage(
+        analysis_run.id,
+        critic_context=critic_context,
+    )
+
+    assert isinstance(result.output, CriticOutputV1)
+    assert result.output.findings[0].affected_claim == (
+        "Database connection pool exhaustion"
+    )
+    assert result.output.alternative_hypothesis is not None
+    assert result.output.alternative_hypothesis.hypothesis_id == "H-003"
+    request = provider.requests[0]
+    assert request.metadata.analysis_stage is AnalysisStage.CRITIC
+    assert request.output_schema is OutputSchemaIdentifier.CRITIC_V1
+    assert request.prompts.task.name is PromptName.CRITIC
+    assert request.metadata.request_identifier.endswith("-critic")
+    assert request.critic_context == critic_context
+    assert request.critic_context.hypotheses.hypotheses[0].title == (
+        "Database connection pool exhaustion"
+    )
+    serialized_request = request.model_dump_json()
+    assert secret not in serialized_request
+    assert "[REDACTED_API_KEY]" in serialized_request
+    assert '"raw_response"' not in serialized_request
+    _assert_no_stage_persistence(service_session, analysis_run.id)
+
+
 def test_core_analysis_persists_all_validated_outputs_and_audit_data(
     database_session_factory: sessionmaker[Session],
 ) -> None:
@@ -730,6 +788,7 @@ def test_core_analysis_persists_all_validated_outputs_and_audit_data(
         assert persisted_run.provider_name == "fake"
         assert persisted_run.model_name == "fixture-v1"
         assert persisted_run.prompt_versions == {
+            "critic": "v1",
             "system": "v1",
             "summary": "v1",
             "timeline": "v1",
@@ -739,13 +798,14 @@ def test_core_analysis_persists_all_validated_outputs_and_audit_data(
         assert persisted_run.raw_response is not None
         audit_envelope = json.loads(persisted_run.raw_response)
         stages = audit_envelope["stages"]
-        assert set(stages) == {"summary", "timeline", "hypotheses"}
+        assert set(stages) == {"summary", "timeline", "hypotheses", "critic"}
 
         fixture_bank = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
         for stage_name, fixture_name in (
             ("summary", "valid_summary"),
             ("timeline", "valid_timeline"),
             ("hypotheses", "valid_hypotheses"),
+            ("critic", "valid_critic"),
         ):
             assert (
                 stages[stage_name]["raw_response"]
@@ -784,9 +844,11 @@ def test_core_analysis_persists_all_validated_outputs_and_audit_data(
             3,
         ]
 
-    assert len(provider.requests) == 3
+    assert len(provider.requests) == 4
     manifests = [request.evidence_manifest for request in provider.requests]
-    assert manifests[0] is manifests[1] is manifests[2]
+    assert manifests[0] is manifests[1] is manifests[2] is manifests[3]
+    assert all(request.critic_context is None for request in provider.requests[:3])
+    assert provider.requests[3].critic_context is not None
     assert all(secret not in request.model_dump_json() for request in provider.requests)
 
 
@@ -883,7 +945,7 @@ def test_core_analysis_rolls_back_structured_rows_before_failed_audit_persistenc
             service.run_core_analysis(run_id)
 
         assert completed_flush_failed is True
-        assert len(provider.requests) == 3
+        assert len(provider.requests) == 4
         assert str(error_info.value) == (
             "The completed analysis results could not be saved."
         )
@@ -892,6 +954,7 @@ def test_core_analysis_rolls_back_structured_rows_before_failed_audit_persistenc
             "valid_summary",
             "valid_timeline",
             "valid_hypotheses",
+            "valid_critic",
         ):
             raw_response = fixture_bank[fixture_name]["raw_response"]
             assert raw_response not in str(error_info.value)
@@ -917,6 +980,7 @@ def test_core_analysis_rolls_back_structured_rows_before_failed_audit_persistenc
         assert persisted_run.timeline_events == []
         assert persisted_run.hypotheses == []
         assert persisted_run.prompt_versions == {
+            "critic": "v1",
             "system": "v1",
             "summary": "v1",
             "timeline": "v1",
@@ -925,11 +989,12 @@ def test_core_analysis_rolls_back_structured_rows_before_failed_audit_persistenc
         assert persisted_run.input_evidence_codes == ["E-001"]
         assert persisted_run.raw_response is not None
         stages = json.loads(persisted_run.raw_response)["stages"]
-        assert set(stages) == {"summary", "timeline", "hypotheses"}
+        assert set(stages) == {"summary", "timeline", "hypotheses", "critic"}
         for stage_name, fixture_name in (
             ("summary", "valid_summary"),
             ("timeline", "valid_timeline"),
             ("hypotheses", "valid_hypotheses"),
+            ("critic", "valid_critic"),
         ):
             assert (
                 stages[stage_name]["raw_response"]

@@ -19,6 +19,7 @@ from app.models import (
     utc_now,
 )
 from app.schemas.ai_outputs import (
+    CriticOutputV1,
     HypothesesOutputV1,
     SummaryOutputV1,
     TimelineOutputV1,
@@ -192,14 +193,36 @@ class AnalysisResultPersistence:
     @staticmethod
     def extract_summary_output(raw_response: str | None) -> SummaryOutputV1 | None:
         """Read only the validated summary from an internal audit envelope."""
+        return AnalysisResultPersistence._extract_stage_output(
+            raw_response,
+            analysis_stage=AnalysisStage.SUMMARY,
+            output_type=SummaryOutputV1,
+        )
+
+    @staticmethod
+    def extract_critic_output(raw_response: str | None) -> CriticOutputV1 | None:
+        """Read only the separate validated critic output from internal audit."""
+        return AnalysisResultPersistence._extract_stage_output(
+            raw_response,
+            analysis_stage=AnalysisStage.CRITIC,
+            output_type=CriticOutputV1,
+        )
+
+    @staticmethod
+    def _extract_stage_output(
+        raw_response: str | None,
+        *,
+        analysis_stage: AnalysisStage,
+        output_type: type[StageOutputT],
+    ) -> StageOutputT | None:
         if raw_response is None:
             return None
         try:
             audit_envelope = json.loads(raw_response)
-            parsed_output = audit_envelope["stages"][AnalysisStage.SUMMARY.value][
+            parsed_output = audit_envelope["stages"][analysis_stage.value][
                 "parsed_output"
             ]
-            return SummaryOutputV1.model_validate(parsed_output)
+            return output_type.model_validate(parsed_output)
         except (json.JSONDecodeError, KeyError, TypeError, ValidationError):
             return None
 
@@ -207,11 +230,13 @@ class AnalysisResultPersistence:
     def require_complete_core_results(analysis_run: AnalysisRun) -> None:
         """Require all core prompts, audits, evidence, and hypotheses before completion."""
         required_stages = {
+            AnalysisStage.CRITIC.value,
             AnalysisStage.SUMMARY.value,
             AnalysisStage.TIMELINE.value,
             AnalysisStage.HYPOTHESES.value,
         }
         required_prompts = {
+            PromptName.CRITIC.value,
             PromptName.SYSTEM.value,
             PromptName.SUMMARY.value,
             PromptName.TIMELINE.value,

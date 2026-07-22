@@ -376,7 +376,7 @@ class GeminiAIProvider:
 
     @staticmethod
     def _build_contents(request: AIRequest, task_prompt: str) -> str:
-        payload = {
+        payload: dict[str, object] = {
             "task_prompt": task_prompt,
             "evidence_manifest": request.evidence_manifest.model_dump(mode="json"),
             "output_schema": request.output_schema.value,
@@ -391,6 +391,8 @@ class GeminiAIProvider:
                 ),
             },
         }
+        if request.critic_context is not None:
+            payload["critic_context"] = request.critic_context.model_dump(mode="json")
         return json.dumps(payload, separators=(",", ":"), sort_keys=True)
 
     @staticmethod

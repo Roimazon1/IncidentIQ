@@ -183,6 +183,70 @@
     </div>
   </section>
 
+  {% if page.critic_output %}
+    <section class="card border-warning shadow-sm mb-4" aria-labelledby="critic-heading">
+      <div class="card-body p-4">
+        <h2 class="h4" id="critic-heading">Adversarial critique</h2>
+        <p class="text-body-secondary">
+          This separate AI pass challenges the initial analysis. It does not change the
+          original hypothesis ranking or establish a root cause.
+        </p>
+
+        <div class="vstack gap-3">
+          {% for finding in page.critic_output.findings %}
+            <article class="border rounded p-3">
+              <h3 class="h5">{{ finding.concern }}</h3>
+              <dl class="mb-0">
+                <dt>Affected claim</dt>
+                <dd>{{ finding.affected_claim }}</dd>
+                <dt>Evidence considered</dt>
+                <dd>
+                  {% if finding.evidence %}
+                    {% for reference in finding.evidence %}
+                      <code>{{ reference.evidence_id }}</code>
+                      lines {{ reference.line_range }}{% if not loop.last %}, {% endif %}
+                    {% endfor %}
+                  {% else %}
+                    No direct evidence cited
+                  {% endif %}
+                </dd>
+                <dt>Potential impact</dt>
+                <dd>{{ finding.impact }}</dd>
+                <dt>Recommended challenge</dt>
+                <dd class="mb-0">{{ finding.recommendation }}</dd>
+              </dl>
+            </article>
+          {% endfor %}
+        </div>
+
+        <dl class="mt-4 mb-0">
+          <dt>Ignored evidence</dt>
+          <dd>
+            {% if page.critic_output.ignored_evidence %}
+              {% for reference in page.critic_output.ignored_evidence %}
+                <code>{{ reference.evidence_id }}</code>
+                lines {{ reference.line_range }}{% if not loop.last %}, {% endif %}
+              {% endfor %}
+            {% else %}
+              None identified by the critic
+            {% endif %}
+          </dd>
+          <dt>Alternative hypothesis to consider</dt>
+          <dd>
+            {% if page.critic_output.alternative_hypothesis %}
+              {{ page.critic_output.alternative_hypothesis.title }}
+              (critic confidence {{ page.critic_output.alternative_hypothesis.confidence }}%)
+            {% else %}
+              No alternative proposed
+            {% endif %}
+          </dd>
+          <dt>Ranking challenge</dt>
+          <dd class="mb-0">{{ page.critic_output.ranking_rationale }}</dd>
+        </dl>
+      </div>
+    </section>
+  {% endif %}
+
   <section class="card border-0 shadow-sm" aria-labelledby="audit-heading">
     <div class="card-body p-4">
       <h2 class="h4" id="audit-heading">Analysis traceability</h2>

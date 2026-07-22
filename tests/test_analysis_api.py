@@ -97,6 +97,11 @@ def test_fake_analysis_can_be_run_and_reopened_without_exposing_raw_audit(
     assert "Recent deployment regression" in detail_response.text
     assert "External payment dependency failure" in detail_response.text
     assert "not confirmed root causes" in detail_response.text
+    assert "Adversarial critique" in detail_response.text
+    assert "The top hypothesis is only weakly distinguished" in detail_response.text
+    assert "does not change the" in detail_response.text
+    assert "original hypothesis ranking" in detail_response.text
+    assert "critic confidence 35%" in detail_response.text
     assert "fake / fixture-v1" in detail_response.text
     assert "summary v1" in detail_response.text
     assert "E-001" in detail_response.text
@@ -122,6 +127,14 @@ def test_fake_analysis_can_be_run_and_reopened_without_exposing_raw_audit(
         assert len(persisted_run.facts) == 1
         assert len(persisted_run.timeline_events) == 2
         assert len(persisted_run.hypotheses) == 3
+        assert [
+            (hypothesis.rank, hypothesis.title, hypothesis.confidence)
+            for hypothesis in persisted_run.hypotheses
+        ] == [
+            (1, "Database connection pool exhaustion", 60),
+            (2, "Recent deployment regression", 45),
+            (3, "External payment dependency failure", 35),
+        ]
 
 
 def test_running_analysis_renders_pending_page(

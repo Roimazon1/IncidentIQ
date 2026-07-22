@@ -25,6 +25,7 @@ from app.schemas.ai_outputs import (
     SummaryOutputV1,
     SupportingEvidenceV1,
     TimelineEventV1,
+    TimelineOutputV1,
 )
 from app.schemas.ai_provider import (
     AIFailureCategory,
@@ -33,6 +34,7 @@ from app.schemas.ai_provider import (
     AIResult,
     AIResultMetadata,
     AnalysisStage,
+    CriticContextV1,
     FailureAuditData,
     OutputSchemaIdentifier,
     PromptBundle,
@@ -165,6 +167,26 @@ def _hypothesis(index: int) -> HypothesisV1:
     )
 
 
+def _critic_context() -> CriticContextV1:
+    return CriticContextV1(
+        summary=_summary(),
+        timeline=TimelineOutputV1(
+            events=(
+                TimelineEventV1(
+                    timestamp="time unknown",
+                    description="Checkout failed.",
+                    evidence=(_reference(),),
+                    is_inferred=False,
+                    confidence=90,
+                ),
+            ),
+        ),
+        hypotheses=HypothesesOutputV1(
+            hypotheses=(_hypothesis(1), _hypothesis(2), _hypothesis(3)),
+        ),
+    )
+
+
 def _result_metadata() -> AIResultMetadata:
     return AIResultMetadata(
         provider_name="fake",
@@ -230,6 +252,62 @@ def test_ai_request_accepts_only_typed_redacted_input() -> None:
     assert "[REDACTED_API_KEY]" in serialized
     assert "original_text" not in serialized
     assert "user_prompt" not in serialized
+
+
+def test_critic_request_requires_typed_initial_analysis_context() -> None:
+    request = AIRequest(
+        evidence_manifest=_manifest(),
+        prompts=PromptBundle(
+            system=_prompt_bundle().system,
+            task=PromptReference(name=PromptName.CRITIC, version=PromptVersion.V1),
+        ),
+        output_schema=OutputSchemaIdentifier.CRITIC_V1,
+        metadata=SafeAIMetadata(
+            request_identifier="req-critic",
+            incident_public_identifier="INC-000001",
+            analysis_stage=AnalysisStage.CRITIC,
+            evidence_manifest_checksum="a" * 64,
+        ),
+        critic_context=_critic_context(),
+    )
+
+    serialized = request.model_dump_json()
+
+    assert request.critic_context.hypotheses.hypotheses[0].title == "Possible cause 1"
+    assert '"critic_context"' in serialized
+    assert '"raw_response"' not in serialized
+    assert '"audit"' not in serialized
+
+
+def test_critic_request_rejects_missing_initial_analysis_context() -> None:
+    with pytest.raises(ValidationError, match="require validated initial analysis"):
+        AIRequest(
+            evidence_manifest=_manifest(),
+            prompts=PromptBundle(
+                system=_prompt_bundle().system,
+                task=PromptReference(
+                    name=PromptName.CRITIC,
+                    version=PromptVersion.V1,
+                ),
+            ),
+            output_schema=OutputSchemaIdentifier.CRITIC_V1,
+            metadata=SafeAIMetadata(
+                request_identifier="req-critic",
+                incident_public_identifier="INC-000001",
+                analysis_stage=AnalysisStage.CRITIC,
+            ),
+        )
+
+
+def test_non_critic_request_rejects_critic_context() -> None:
+    with pytest.raises(ValidationError, match="only accepted for critic requests"):
+        AIRequest(
+            evidence_manifest=_manifest(),
+            prompts=_prompt_bundle(),
+            output_schema=OutputSchemaIdentifier.SUMMARY_V1,
+            metadata=_metadata(),
+            critic_context=_critic_context(),
+        )
 
 
 @pytest.mark.parametrize(

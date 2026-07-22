@@ -12,11 +12,17 @@ import pytest
 
 from app.config import Settings
 from app.models.enums import EvidenceType
-from app.schemas.ai_outputs import SummaryOutputV1
+from app.schemas.ai_outputs import (
+    CriticOutputV1,
+    HypothesesOutputV1,
+    SummaryOutputV1,
+    TimelineOutputV1,
+)
 from app.schemas.ai_provider import (
     AIFailureCategory,
     AIRequest,
     AnalysisStage,
+    CriticContextV1,
     OutputSchemaIdentifier,
     PromptBundle,
     PromptName,
@@ -47,6 +53,7 @@ from app.services.providers.gemini_provider import (
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "fake_ai_responses.json"
 SYSTEM_PROMPT = "Use only the supplied redacted evidence."
 TASK_PROMPT = "Produce a neutral summary with cited facts and explicit uncertainty."
+CRITIC_PROMPT = "Challenge the supplied validated initial analysis."
 
 
 @pytest.fixture(autouse=True)
@@ -138,6 +145,8 @@ def _resolve_prompt(reference: PromptReference) -> str:
         return SYSTEM_PROMPT
     if reference.name is PromptName.SUMMARY:
         return TASK_PROMPT
+    if reference.name is PromptName.CRITIC:
+        return CRITIC_PROMPT
     raise LookupError(reference.name)
 
 
@@ -145,12 +154,15 @@ def _validate_prompt_bundle(
     bundle: PromptBundle,
     analysis_stage: AnalysisStage,
 ) -> None:
+    expected_task = {
+        AnalysisStage.SUMMARY: PromptName.SUMMARY,
+        AnalysisStage.CRITIC: PromptName.CRITIC,
+    }.get(analysis_stage)
     if (
         bundle.system.name is not PromptName.SYSTEM
         or bundle.system.version is not PromptVersion.V1
-        or bundle.task.name is not PromptName.SUMMARY
+        or bundle.task.name is not expected_task
         or bundle.task.version is not PromptVersion.V1
-        or analysis_stage is not AnalysisStage.SUMMARY
     ):
         raise LookupError("unregistered prompt bundle")
 
@@ -199,6 +211,39 @@ def _summary_request() -> AIRequest:
             incident_public_identifier="INC-000001",
             analysis_stage=AnalysisStage.SUMMARY,
             evidence_manifest_checksum="a" * 64,
+        ),
+    )
+
+
+def _critic_request() -> AIRequest:
+    fixture_bank = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+    summary_request = _summary_request()
+    return AIRequest(
+        evidence_manifest=summary_request.evidence_manifest,
+        prompts=PromptBundle(
+            system=summary_request.prompts.system,
+            task=PromptReference(
+                name=PromptName.CRITIC,
+                version=PromptVersion.V1,
+            ),
+        ),
+        output_schema=OutputSchemaIdentifier.CRITIC_V1,
+        metadata=SafeAIMetadata(
+            request_identifier="req-critic",
+            incident_public_identifier="INC-000001",
+            analysis_stage=AnalysisStage.CRITIC,
+            evidence_manifest_checksum="a" * 64,
+        ),
+        critic_context=CriticContextV1(
+            summary=SummaryOutputV1.model_validate_json(
+                fixture_bank["valid_summary"]["raw_response"]
+            ),
+            timeline=TimelineOutputV1.model_validate_json(
+                fixture_bank["valid_timeline"]["raw_response"]
+            ),
+            hypotheses=HypothesesOutputV1.model_validate_json(
+                fixture_bank["valid_hypotheses"]["raw_response"]
+            ),
         ),
     )
 
@@ -286,6 +331,26 @@ def test_injected_client_receives_redacted_structured_request_only() -> None:
     assert isinstance(response_schema, dict)
     assert response_schema["type"] == "object"
     assert "properties" in response_schema
+
+
+def test_critic_payload_contains_validated_initial_analysis_without_audit() -> None:
+    client = _FakeClient([_FakeResponse(_fixture_response("valid_critic"))])
+    provider = _provider(client)
+
+    result = provider.generate(_critic_request())
+
+    assert isinstance(result.output, CriticOutputV1)
+    payload = json.loads(client.recorded_models.calls[0]["contents"])
+    assert payload["task_prompt"] == CRITIC_PROMPT
+    assert payload["critic_context"]["summary"]["summary"]["text"] == (
+        "Checkout requests are failing."
+    )
+    assert payload["critic_context"]["hypotheses"]["hypotheses"][0]["title"] == (
+        "Database connection pool exhaustion"
+    )
+    assert "critic_context" not in payload["evidence_manifest"]
+    assert "raw_response" not in client.recorded_models.calls[0]["contents"]
+    assert "audit" not in client.recorded_models.calls[0]["contents"]
 
 
 def test_schema_sent_to_gemini_uses_only_supported_keywords() -> None:
