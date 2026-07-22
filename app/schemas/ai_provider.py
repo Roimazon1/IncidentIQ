@@ -11,10 +11,25 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    StrictBool,
     StringConstraints,
     model_validator,
 )
 
+from app.models.enums import ClaimSupportStatus
+from app.schemas.ai_outputs import (
+    ConfidenceScore,
+    CriticOutputV1,
+    EvidenceReferenceV1,
+    HypothesisIdentifier,
+    HypothesisValidationTestV1,
+    HypothesesOutputV1,
+    NonBlankText,
+    ReasoningRisksOutputV1,
+    PositiveRank,
+    SummaryOutputV1,
+    TimelineOutputV1,
+)
 from app.schemas.evidence import EvidenceManifest, Sha256Checksum
 from app.schemas.incident import IncidentPublicId
 
@@ -62,6 +77,7 @@ class PromptName(StrEnum):
     HYPOTHESES = "hypotheses"
     CRITIC = "critic"
     BIAS = "bias"
+    OPEN_QUESTIONS = "open_questions"
     POSTMORTEM = "postmortem"
 
 
@@ -80,6 +96,7 @@ class AnalysisStage(StrEnum):
     HYPOTHESES = "hypotheses"
     CRITIC = "critic"
     BIAS = "bias"
+    OPEN_QUESTIONS = "open_questions"
     POSTMORTEM = "postmortem"
 
 
@@ -103,6 +120,7 @@ class OutputSchemaIdentifier(StrEnum):
     HYPOTHESES_V1 = "hypotheses_v1"
     CRITIC_V1 = "critic_v1"
     REASONING_RISKS_V1 = "reasoning_risks_v1"
+    OPEN_QUESTIONS_V1 = "open_questions_v1"
 
 
 class PromptReference(StrictAIContract):
@@ -137,13 +155,134 @@ class SafeAIMetadata(StrictAIContract):
     evidence_manifest_checksum: Sha256Checksum | None = None
 
 
+class CriticContextV1(StrictAIContract):
+    """Validated initial analysis supplied separately to the critic stage."""
+
+    summary: SummaryOutputV1
+    timeline: TimelineOutputV1
+    hypotheses: HypothesesOutputV1
+
+
+class EvidenceReferenceValidationStatus(StrEnum):
+    """Provider-neutral deterministic outcomes for generated citations."""
+
+    VALID = "valid"
+    UNKNOWN_EVIDENCE_ID = "unknown_evidence_id"
+    INVALID_LINE_RANGE = "invalid_line_range"
+    EXCERPT_MISMATCH = "excerpt_mismatch"
+
+
+class ValidatedEvidenceReferenceV1(StrictAIContract):
+    """One generated reference and its deterministic validation outcome."""
+
+    reference: EvidenceReferenceV1
+    status: EvidenceReferenceValidationStatus
+    message: NonBlankText
+
+
+class ValidatedFactV1(StrictAIContract):
+    """A fact candidate with deterministic support classification."""
+
+    claim: NonBlankText
+    confidence: ConfidenceScore
+    support_status: ClaimSupportStatus
+    evidence: tuple[ValidatedEvidenceReferenceV1, ...] = Field(min_length=1)
+
+
+class ValidatedTimelineEventV1(StrictAIContract):
+    """A timeline event carrying its deterministic persisted confidence."""
+
+    timestamp: NonBlankText
+    description: NonBlankText
+    evidence: tuple[ValidatedEvidenceReferenceV1, ...] = Field(min_length=1)
+    is_inferred: StrictBool
+    persisted_confidence: ConfidenceScore
+    uncertainty_explanation: NonBlankText | None = None
+
+
+class ValidatedHypothesisEvidenceV1(StrictAIContract):
+    """Hypothesis evidence with its deterministic reference outcome."""
+
+    reference: ValidatedEvidenceReferenceV1
+    relevance: NonBlankText
+
+
+class ValidatedHypothesisV1(StrictAIContract):
+    """A hypothesis with deterministic confidence and citation outcomes."""
+
+    hypothesis_id: HypothesisIdentifier
+    rank: PositiveRank
+    title: NonBlankText
+    explanation: NonBlankText
+    adjusted_confidence: ConfidenceScore
+    supporting_evidence: tuple[ValidatedHypothesisEvidenceV1, ...] = Field(min_length=1)
+    contradicting_evidence: tuple[ValidatedHypothesisEvidenceV1, ...]
+    missing_evidence: tuple[NonBlankText, ...]
+    validation_test: HypothesisValidationTestV1
+    risk_of_acting: NonBlankText
+
+
+class ValidatedAnalysisViewV1(StrictAIContract):
+    """Deterministic P7 validation state safe for provider reasoning."""
+
+    facts: tuple[ValidatedFactV1, ...]
+    timeline: tuple[ValidatedTimelineEventV1, ...]
+    hypotheses: tuple[ValidatedHypothesisV1, ...]
+
+
+class BiasContextV1(StrictAIContract):
+    """Clearly separated original, validated, and critic analysis views."""
+
+    original_analysis: CriticContextV1
+    validated_analysis: ValidatedAnalysisViewV1
+    critic: CriticOutputV1
+
+
+class OpenQuestionsContextV1(StrictAIContract):
+    """Validated analysis, critic, and bias results for open questions."""
+
+    analysis_context: BiasContextV1
+    reasoning_risks: ReasoningRisksOutputV1
+
+
 class AIRequest(StrictAIContract):
-    """Redacted-only input accepted by any IncidentIQ AI provider."""
+    """Typed, provider-neutral input accepted by an IncidentIQ AI provider."""
 
     evidence_manifest: EvidenceManifest
     prompts: PromptBundle
     output_schema: OutputSchemaIdentifier
     metadata: SafeAIMetadata
+    critic_context: CriticContextV1 | None = None
+    bias_context: BiasContextV1 | None = None
+    open_questions_context: OpenQuestionsContextV1 | None = None
+
+    @model_validator(mode="after")
+    def validate_analysis_context_roles(self) -> AIRequest:
+        """Require each typed analysis context only for its owning stage."""
+        is_critic_request = self.metadata.analysis_stage is AnalysisStage.CRITIC
+        is_bias_request = self.metadata.analysis_stage is AnalysisStage.BIAS
+        is_open_questions_request = (
+            self.metadata.analysis_stage is AnalysisStage.OPEN_QUESTIONS
+        )
+        if is_critic_request and self.critic_context is None:
+            raise ValueError(
+                "critic requests require validated initial analysis context"
+            )
+        if not is_critic_request and self.critic_context is not None:
+            raise ValueError("critic context is only accepted for critic requests")
+        if is_bias_request and self.bias_context is None:
+            raise ValueError("bias requests require validated analysis context")
+        if not is_bias_request and self.bias_context is not None:
+            raise ValueError("bias context is only accepted for bias requests")
+        if is_open_questions_request and self.open_questions_context is None:
+            raise ValueError(
+                "open-question requests require validated reasoning context"
+            )
+        if not is_open_questions_request and self.open_questions_context is not None:
+            raise ValueError(
+                "open-question context is only accepted for open-question requests"
+            )
+        return self
 
 
 class AIResultMetadata(StrictAIContract):

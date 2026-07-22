@@ -28,7 +28,11 @@ from app.models import (
 )
 from app.schemas.ai_outputs import (
     AIOutput,
+    ContradictingEvidenceV1,
+    CriticOutputV1,
+    EvidenceReferenceV1,
     HypothesesOutputV1,
+    OpenQuestionsOutputV1,
     SummaryOutputV1,
     TimelineOutputV1,
 )
@@ -37,10 +41,12 @@ from app.schemas.ai_provider import (
     AIRequest,
     AIResult,
     AnalysisStage,
+    CriticContextV1,
     OutputSchemaIdentifier,
     PromptName,
     PromptReference,
     PromptVersion,
+    SuccessAuditData,
 )
 from app.services.analysis_service import (
     AnalysisAlreadyRunningError,
@@ -57,6 +63,10 @@ from app.services.ai_provider import AIProviderExecutionError, build_ai_result
 from app.services.incident_service import IncidentNotFoundError
 from app.services.prompt_registry import PromptRegistry
 from app.services.providers.fake_provider import FakeAIProvider
+from app.services.validation_service import (
+    EvidenceReferenceValidationStatus,
+    ValidationService,
+)
 
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "fake_ai_responses.json"
@@ -87,7 +97,7 @@ def _persist_incident(
     session: Session,
     *,
     with_evidence: bool = True,
-    original_text: str = "Checkout failed",
+    original_text: str = "checkout failed",
 ) -> Incident:
     incident = Incident(
         public_id="INC-000001",
@@ -145,12 +155,32 @@ def _recording_core_provider(
         OutputSchemaIdentifier.SUMMARY_V1: _fixture_provider("valid_summary"),
         OutputSchemaIdentifier.TIMELINE_V1: _fixture_provider(timeline_fixture),
         OutputSchemaIdentifier.HYPOTHESES_V1: _fixture_provider("valid_hypotheses"),
+        OutputSchemaIdentifier.CRITIC_V1: _fixture_provider("valid_critic"),
+        OutputSchemaIdentifier.REASONING_RISKS_V1: _fixture_provider("valid_bias"),
+        OutputSchemaIdentifier.OPEN_QUESTIONS_V1: _fixture_provider(
+            "valid_open_questions"
+        ),
     }
 
     def generate(request: AIRequest) -> AIResult[AIOutput]:
         return providers[request.output_schema].generate(request)
 
     return _RecordingProvider(generate)
+
+
+def _critic_context() -> CriticContextV1:
+    fixture_bank = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+    return CriticContextV1(
+        summary=SummaryOutputV1.model_validate_json(
+            fixture_bank["valid_summary"]["raw_response"]
+        ),
+        timeline=TimelineOutputV1.model_validate_json(
+            fixture_bank["valid_timeline"]["raw_response"]
+        ),
+        hypotheses=HypothesesOutputV1.model_validate_json(
+            fixture_bank["valid_hypotheses"]["raw_response"]
+        ),
+    )
 
 
 def _assert_no_stage_persistence(session: Session, run_id: int) -> None:
@@ -433,7 +463,7 @@ def test_summary_stage_extracts_typed_facts_and_assumptions_from_redacted_input(
     secret = "sk-production-secret-1234"
     incident = _persist_incident(
         service_session,
-        original_text=f"api_key={secret}\nCheckout failed",
+        original_text=f"api_key={secret}\ncheckout failed",
     )
     provider = _recording_summary_provider()
     service = AnalysisService(service_session, ai_provider=provider)
@@ -462,6 +492,73 @@ def test_summary_stage_extracts_typed_facts_and_assumptions_from_redacted_input(
     assert secret not in serialized_request
     assert "[REDACTED_API_KEY]" in serialized_request
     assert result.audit.raw_response
+
+
+@pytest.mark.parametrize(
+    ("reference_update", "expected_status"),
+    [
+        (
+            {"evidence_id": "E-999"},
+            EvidenceReferenceValidationStatus.UNKNOWN_EVIDENCE_ID,
+        ),
+        (
+            {"excerpt": "fabricated database outage"},
+            EvidenceReferenceValidationStatus.EXCERPT_MISMATCH,
+        ),
+        (
+            {"line_range": "999"},
+            EvidenceReferenceValidationStatus.INVALID_LINE_RANGE,
+        ),
+    ],
+    ids=["unknown-evidence-id", "fabricated-excerpt", "out-of-range-line"],
+)
+def test_summary_stage_reports_invalid_traceability_without_terminating_run(
+    service_session: Session,
+    reference_update: dict[str, str],
+    expected_status: EvidenceReferenceValidationStatus,
+) -> None:
+    fixture_provider = _recording_summary_provider()
+    raw_audit_marker = "raw-audit-only-sensitive-provider-content"
+
+    def generate_invalid_reference(request: AIRequest) -> AIResult[AIOutput]:
+        result = fixture_provider.generate(request)
+        output = result.output
+        assert isinstance(output, SummaryOutputV1)
+        fact = output.facts[0]
+        invalid_reference = fact.evidence[0].model_copy(update=reference_update)
+        invalid_output = output.model_copy(
+            update={
+                "facts": (fact.model_copy(update={"evidence": (invalid_reference,)}),)
+            }
+        )
+        return AIResult[AIOutput](
+            output=invalid_output,
+            metadata=result.metadata,
+            audit=SuccessAuditData(raw_response=raw_audit_marker),
+        )
+
+    incident = _persist_incident(
+        service_session,
+        original_text="checkout failed\nretry=false",
+    )
+    provider = _RecordingProvider(generate_invalid_reference)
+    service = AnalysisService(service_session, ai_provider=provider)
+    analysis_run = _start_run(service, incident.public_id)
+
+    result = service.run_summary_stage(analysis_run.id)
+    outcomes = ValidationService.validate_output_references(
+        result.output,
+        provider.requests[0].evidence_manifest,
+    )
+
+    assert len(outcomes) == 1
+    assert outcomes[0].status is expected_status
+    assert outcomes[0].is_valid is False
+    assert result.audit.raw_response == raw_audit_marker
+    assert raw_audit_marker not in result.model_dump_json()
+    assert raw_audit_marker not in repr(result)
+    assert raw_audit_marker not in repr(outcomes)
+    _assert_no_stage_persistence(service_session, analysis_run.id)
 
 
 def test_summary_stage_rejects_non_summary_output_without_persistence(
@@ -592,7 +689,7 @@ def test_timeline_stage_returns_direct_and_inferred_events_from_redacted_input(
     secret = "sk-production-secret-1234"
     incident = _persist_incident(
         service_session,
-        original_text=(f"api_key={secret}\n2025-01-01T12:30:00+02:00 Checkout failed"),
+        original_text=(f"api_key={secret}\n2025-01-01T12:30:00+02:00 checkout failed"),
     )
     provider = _recording_stage_provider("valid_timeline")
     service = AnalysisService(service_session, ai_provider=provider)
@@ -624,7 +721,7 @@ def test_hypotheses_stage_returns_three_ranked_distinct_hypotheses(
     secret = "sk-production-secret-1234"
     incident = _persist_incident(
         service_session,
-        original_text=f"api_key={secret}\nCheckout failed",
+        original_text=f"api_key={secret}\ncheckout failed",
     )
     provider = _recording_stage_provider("valid_hypotheses")
     service = AnalysisService(service_session, ai_provider=provider)
@@ -694,6 +791,46 @@ def test_hypotheses_stage_rejects_materially_duplicate_titles_without_persistenc
     _assert_no_stage_persistence(service_session, analysis_run.id)
 
 
+def test_critic_stage_returns_separate_typed_redacted_result(
+    service_session: Session,
+) -> None:
+    secret = "sk-production-secret-1234"
+    incident = _persist_incident(
+        service_session,
+        original_text=f"api_key={secret}\ncheckout failed",
+    )
+    provider = _recording_stage_provider("valid_critic")
+    service = AnalysisService(service_session, ai_provider=provider)
+    analysis_run = _start_run(service, incident.public_id)
+
+    critic_context = _critic_context()
+    result = service.run_critic_stage(
+        analysis_run.id,
+        critic_context=critic_context,
+    )
+
+    assert isinstance(result.output, CriticOutputV1)
+    assert result.output.findings[0].affected_claim == (
+        "Database connection pool exhaustion"
+    )
+    assert result.output.alternative_hypothesis is not None
+    assert result.output.alternative_hypothesis.hypothesis_id == "H-003"
+    request = provider.requests[0]
+    assert request.metadata.analysis_stage is AnalysisStage.CRITIC
+    assert request.output_schema is OutputSchemaIdentifier.CRITIC_V1
+    assert request.prompts.task.name is PromptName.CRITIC
+    assert request.metadata.request_identifier.endswith("-critic")
+    assert request.critic_context == critic_context
+    assert request.critic_context.hypotheses.hypotheses[0].title == (
+        "Database connection pool exhaustion"
+    )
+    serialized_request = request.model_dump_json()
+    assert secret not in serialized_request
+    assert "[REDACTED_API_KEY]" in serialized_request
+    assert '"raw_response"' not in serialized_request
+    _assert_no_stage_persistence(service_session, analysis_run.id)
+
+
 def test_core_analysis_persists_all_validated_outputs_and_audit_data(
     database_session_factory: sessionmaker[Session],
 ) -> None:
@@ -703,7 +840,7 @@ def test_core_analysis_persists_all_validated_outputs_and_audit_data(
         incident = _persist_incident(
             session,
             original_text=(
-                f"api_key={secret}\n2025-01-01T12:30:00+02:00 Checkout failed"
+                f"api_key={secret}\n2025-01-01T12:30:00+02:00 checkout failed"
             ),
         )
         service = AnalysisService(session, ai_provider=provider)
@@ -719,6 +856,7 @@ def test_core_analysis_persists_all_validated_outputs_and_audit_data(
                 selectinload(AnalysisRun.facts),
                 selectinload(AnalysisRun.timeline_events),
                 selectinload(AnalysisRun.hypotheses),
+                selectinload(AnalysisRun.bias_flags),
             )
             .where(AnalysisRun.id == run_id)
         )
@@ -730,22 +868,35 @@ def test_core_analysis_persists_all_validated_outputs_and_audit_data(
         assert persisted_run.provider_name == "fake"
         assert persisted_run.model_name == "fixture-v1"
         assert persisted_run.prompt_versions == {
+            "bias": "v1",
+            "critic": "v1",
             "system": "v1",
             "summary": "v1",
             "timeline": "v1",
             "hypotheses": "v1",
+            "open_questions": "v1",
         }
         assert persisted_run.input_evidence_codes == ["E-001"]
         assert persisted_run.raw_response is not None
         audit_envelope = json.loads(persisted_run.raw_response)
         stages = audit_envelope["stages"]
-        assert set(stages) == {"summary", "timeline", "hypotheses"}
+        assert set(stages) == {
+            "summary",
+            "timeline",
+            "hypotheses",
+            "critic",
+            "bias",
+            "open_questions",
+        }
 
         fixture_bank = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
         for stage_name, fixture_name in (
             ("summary", "valid_summary"),
             ("timeline", "valid_timeline"),
             ("hypotheses", "valid_hypotheses"),
+            ("critic", "valid_critic"),
+            ("bias", "valid_bias"),
+            ("open_questions", "valid_open_questions"),
         ):
             assert (
                 stages[stage_name]["raw_response"]
@@ -758,9 +909,15 @@ def test_core_analysis_persists_all_validated_outputs_and_audit_data(
         summary_output = SummaryOutputV1.model_validate(
             stages["summary"]["parsed_output"]
         )
+        open_questions_output = OpenQuestionsOutputV1.model_validate(
+            stages["open_questions"]["parsed_output"]
+        )
+        assert all(
+            question.evidence_needed for question in open_questions_output.questions
+        )
         assert summary_output.assumptions[0].claim == "A deployment may be related."
         assert len(persisted_run.facts) == 1
-        assert persisted_run.facts[0].support_status is ClaimSupportStatus.UNSUPPORTED
+        assert persisted_run.facts[0].support_status is ClaimSupportStatus.SUPPORTED
         assert persisted_run.facts[0].evidence_codes == ["E-001"]
         assert len(persisted_run.timeline_events) == 2
         direct_event = next(
@@ -777,17 +934,186 @@ def test_core_analysis_persists_all_validated_outputs_and_audit_data(
         )
         assert timeline_output.events[0].timestamp == "2025-01-01T12:30:00+02:00"
         assert timeline_output.events[1].timestamp == "time unknown"
+        assert timeline_output.events[1].uncertainty_explanation == (
+            "Only one captured failure is available, so the start time cannot be "
+            "established."
+        )
         assert len(persisted_run.hypotheses) == 3
         assert sorted(hypothesis.rank for hypothesis in persisted_run.hypotheses) == [
             1,
             2,
             3,
         ]
+        assert {risk.bias_type for risk in persisted_run.bias_flags} == {
+            "Confirmation bias",
+            "Anchoring bias",
+            "Automation bias",
+            "Post hoc fallacy",
+            "Overconfidence bias",
+        }
 
-    assert len(provider.requests) == 3
+    assert len(provider.requests) == 6
     manifests = [request.evidence_manifest for request in provider.requests]
-    assert manifests[0] is manifests[1] is manifests[2]
+    assert all(manifest is manifests[0] for manifest in manifests)
+    assert all(request.critic_context is None for request in provider.requests[:3])
+    assert provider.requests[3].critic_context is not None
+    assert provider.requests[4].bias_context is not None
+    assert provider.requests[5].open_questions_context is not None
     assert all(secret not in request.model_dump_json() for request in provider.requests)
+
+
+def test_core_analysis_lowers_confidence_for_valid_contradicting_evidence(
+    database_session_factory: sessionmaker[Session],
+) -> None:
+    fixture_provider = _recording_core_provider()
+
+    def generate_contradicting_hypothesis(
+        request: AIRequest,
+    ) -> AIResult[AIOutput]:
+        result = fixture_provider.generate(request)
+        if request.metadata.analysis_stage is not AnalysisStage.HYPOTHESES:
+            return result
+        output = result.output
+        assert isinstance(output, HypothesesOutputV1)
+        first_hypothesis = output.hypotheses[0]
+        contradiction = ContradictingEvidenceV1(
+            reference=EvidenceReferenceV1(
+                evidence_id="E-001",
+                line_range="2",
+                excerpt="database pool healthy",
+            ),
+            relevance="The observed healthy pool conflicts with pool exhaustion.",
+        )
+        modified_output = output.model_copy(
+            update={
+                "hypotheses": (
+                    first_hypothesis.model_copy(
+                        update={"contradicting_evidence": (contradiction,)},
+                    ),
+                    *output.hypotheses[1:],
+                )
+            }
+        )
+        return AIResult[AIOutput](
+            output=modified_output,
+            metadata=result.metadata,
+            audit=SuccessAuditData(raw_response=modified_output.model_dump_json()),
+        )
+
+    provider = _RecordingProvider(generate_contradicting_hypothesis)
+    with database_session_factory() as session:
+        incident = _persist_incident(
+            session,
+            original_text="checkout failed\ndatabase pool healthy",
+        )
+        service = AnalysisService(session, ai_provider=provider)
+        analysis_run = _start_run(service, incident.public_id)
+
+        completed_run = service.run_core_analysis(analysis_run.id)
+        run_id = completed_run.id
+
+    with database_session_factory() as session:
+        persisted_run = session.scalar(
+            select(AnalysisRun)
+            .options(selectinload(AnalysisRun.hypotheses))
+            .where(AnalysisRun.id == run_id)
+        )
+
+        assert persisted_run is not None
+        top_hypothesis = min(persisted_run.hypotheses, key=lambda item: item.rank)
+        assert top_hypothesis.confidence == 50
+        assert top_hypothesis.contradicting_evidence_codes == ["E-001"]
+
+        audit_envelope = json.loads(persisted_run.raw_response or "")
+        audited_hypothesis = audit_envelope["stages"]["hypotheses"]["parsed_output"][
+            "hypotheses"
+        ][0]
+        assert audited_hypothesis["confidence"] == 60
+        assert audited_hypothesis["contradicting_evidence"] == [
+            {
+                "reference": {
+                    "evidence_id": "E-001",
+                    "line_range": "2",
+                    "excerpt": "database pool healthy",
+                },
+                "relevance": (
+                    "The observed healthy pool conflicts with pool exhaustion."
+                ),
+            }
+        ]
+
+
+@pytest.mark.parametrize(
+    ("reference_update", "expected_evidence_codes"),
+    [
+        pytest.param(
+            {"evidence_id": "E-999"},
+            ["E-999"],
+            id="unknown-evidence-id",
+        ),
+        pytest.param(
+            {"line_range": "999"},
+            ["E-001"],
+            id="out-of-range-line-reference",
+        ),
+        pytest.param(
+            {"excerpt": "fabricated checkout success"},
+            ["E-001"],
+            id="fabricated-excerpt",
+        ),
+    ],
+)
+def test_core_analysis_flags_invalid_fact_reference_without_failing_run(
+    database_session_factory: sessionmaker[Session],
+    reference_update: dict[str, str],
+    expected_evidence_codes: list[str],
+) -> None:
+    fixture_provider = _recording_core_provider()
+
+    def generate_invalid_summary_reference(request: AIRequest) -> AIResult[AIOutput]:
+        result = fixture_provider.generate(request)
+        if request.metadata.analysis_stage is not AnalysisStage.SUMMARY:
+            return result
+        output = result.output
+        assert isinstance(output, SummaryOutputV1)
+        fact = output.facts[0]
+        invalid_reference = fact.evidence[0].model_copy(update=reference_update)
+        return AIResult[AIOutput](
+            output=output.model_copy(
+                update={
+                    "facts": (
+                        fact.model_copy(
+                            update={"evidence": (invalid_reference,)},
+                        ),
+                    )
+                }
+            ),
+            metadata=result.metadata,
+            audit=result.audit,
+        )
+
+    provider = _RecordingProvider(generate_invalid_summary_reference)
+    with database_session_factory() as session:
+        incident = _persist_incident(session)
+        service = AnalysisService(session, ai_provider=provider)
+        analysis_run = _start_run(service, incident.public_id)
+
+        completed_run = service.run_core_analysis(analysis_run.id)
+        run_id = completed_run.id
+
+    with database_session_factory() as session:
+        persisted_run = session.scalar(
+            select(AnalysisRun)
+            .options(selectinload(AnalysisRun.facts))
+            .where(AnalysisRun.id == run_id)
+        )
+
+        assert persisted_run is not None
+        assert persisted_run.status is AnalysisRunStatus.COMPLETED
+        assert len(persisted_run.facts) == 1
+        assert persisted_run.facts[0].support_status is ClaimSupportStatus.UNSUPPORTED
+        assert persisted_run.facts[0].evidence_codes == expected_evidence_codes
+        assert persisted_run.facts[0].supporting_excerpt is None
 
 
 def test_core_analysis_retains_failed_stage_audit_without_structured_rows(
@@ -883,7 +1209,7 @@ def test_core_analysis_rolls_back_structured_rows_before_failed_audit_persistenc
             service.run_core_analysis(run_id)
 
         assert completed_flush_failed is True
-        assert len(provider.requests) == 3
+        assert len(provider.requests) == 6
         assert str(error_info.value) == (
             "The completed analysis results could not be saved."
         )
@@ -892,6 +1218,9 @@ def test_core_analysis_rolls_back_structured_rows_before_failed_audit_persistenc
             "valid_summary",
             "valid_timeline",
             "valid_hypotheses",
+            "valid_critic",
+            "valid_bias",
+            "valid_open_questions",
         ):
             raw_response = fixture_bank[fixture_name]["raw_response"]
             assert raw_response not in str(error_info.value)
@@ -904,6 +1233,7 @@ def test_core_analysis_rolls_back_structured_rows_before_failed_audit_persistenc
                 selectinload(AnalysisRun.facts),
                 selectinload(AnalysisRun.timeline_events),
                 selectinload(AnalysisRun.hypotheses),
+                selectinload(AnalysisRun.bias_flags),
             )
             .where(AnalysisRun.id == run_id)
         )
@@ -916,20 +1246,34 @@ def test_core_analysis_rolls_back_structured_rows_before_failed_audit_persistenc
         assert persisted_run.facts == []
         assert persisted_run.timeline_events == []
         assert persisted_run.hypotheses == []
+        assert persisted_run.bias_flags == []
         assert persisted_run.prompt_versions == {
+            "bias": "v1",
+            "critic": "v1",
             "system": "v1",
             "summary": "v1",
             "timeline": "v1",
             "hypotheses": "v1",
+            "open_questions": "v1",
         }
         assert persisted_run.input_evidence_codes == ["E-001"]
         assert persisted_run.raw_response is not None
         stages = json.loads(persisted_run.raw_response)["stages"]
-        assert set(stages) == {"summary", "timeline", "hypotheses"}
+        assert set(stages) == {
+            "summary",
+            "timeline",
+            "hypotheses",
+            "critic",
+            "bias",
+            "open_questions",
+        }
         for stage_name, fixture_name in (
             ("summary", "valid_summary"),
             ("timeline", "valid_timeline"),
             ("hypotheses", "valid_hypotheses"),
+            ("critic", "valid_critic"),
+            ("bias", "valid_bias"),
+            ("open_questions", "valid_open_questions"),
         ):
             assert (
                 stages[stage_name]["raw_response"]

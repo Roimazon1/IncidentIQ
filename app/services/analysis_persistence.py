@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.models import (
     AnalysisRun,
     AnalysisRunStatus,
-    ClaimSupportStatus,
+    BiasFlag,
     Fact,
     Hypothesis,
     IncidentStatus,
@@ -19,11 +19,21 @@ from app.models import (
     utc_now,
 )
 from app.schemas.ai_outputs import (
-    HypothesesOutputV1,
+    CriticOutputV1,
+    OpenQuestionsOutputV1,
+    ReasoningRisksOutputV1,
     SummaryOutputV1,
     TimelineOutputV1,
 )
-from app.schemas.ai_provider import AIResult, AnalysisStage, PromptName
+from app.schemas.ai_provider import (
+    AIResult,
+    AnalysisStage,
+    EvidenceReferenceValidationStatus,
+    PromptName,
+    ValidatedAnalysisViewV1,
+    ValidatedFactV1,
+    ValidatedHypothesisV1,
+)
 from app.services.ai_provider import AIProviderExecutionError
 from app.services.analysis_stage_runner import AnalysisStageOutputError
 
@@ -96,9 +106,8 @@ class AnalysisResultPersistence:
         self,
         analysis_run: AnalysisRun,
         *,
-        summary_result: AIResult[SummaryOutputV1],
-        timeline_result: AIResult[TimelineOutputV1],
-        hypotheses_result: AIResult[HypothesesOutputV1],
+        bias_result: AIResult[ReasoningRisksOutputV1],
+        validated_analysis: ValidatedAnalysisViewV1,
         prompt_versions: dict[str, str],
         input_evidence_codes: list[str],
         stage_records: dict[str, dict[str, object]],
@@ -108,66 +117,96 @@ class AnalysisResultPersistence:
         analysis_run.input_evidence_codes = list(input_evidence_codes)
         analysis_run.raw_response = self._serialize_stage_records(stage_records)
         analysis_run.facts = [
-            Fact(
-                claim=fact.claim,
-                support_status=ClaimSupportStatus.UNSUPPORTED,
-                confidence=fact.confidence,
-                evidence_codes=list(
-                    dict.fromkeys(reference.evidence_id for reference in fact.evidence)
-                ),
-                supporting_excerpt=next(
-                    (
-                        reference.excerpt
-                        for reference in fact.evidence
-                        if reference.excerpt is not None
-                    ),
-                    None,
-                ),
-            )
-            for fact in summary_result.output.facts
+            self._build_fact(fact) for fact in validated_analysis.facts
         ]
         analysis_run.timeline_events = [
             TimelineEvent(
                 event_time=self._parse_timeline_instant(event.timestamp),
                 description=event.description,
                 evidence_codes=list(
-                    dict.fromkeys(reference.evidence_id for reference in event.evidence)
+                    dict.fromkeys(
+                        evidence.reference.evidence_id for evidence in event.evidence
+                    )
                 ),
                 is_inferred=event.is_inferred,
-                confidence=event.confidence,
+                confidence=event.persisted_confidence,
             )
-            for event in timeline_result.output.events
+            for event in validated_analysis.timeline
         ]
         analysis_run.hypotheses = [
-            Hypothesis(
-                rank=hypothesis.rank,
-                title=hypothesis.title,
-                explanation=hypothesis.explanation,
-                confidence=hypothesis.confidence,
-                supporting_evidence_codes=list(
-                    dict.fromkeys(
-                        evidence.reference.evidence_id
-                        for evidence in hypothesis.supporting_evidence
-                    )
+            self._build_hypothesis(hypothesis)
+            for hypothesis in validated_analysis.hypotheses
+        ]
+        analysis_run.bias_flags = [
+            BiasFlag(
+                bias_type=risk.name,
+                explanation=(
+                    f"Location: {risk.location}\n"
+                    f"Potential effect: {risk.potential_effect}"
                 ),
-                contradicting_evidence_codes=list(
-                    dict.fromkeys(
-                        evidence.reference.evidence_id
-                        for evidence in hypothesis.contradicting_evidence
-                    )
-                ),
-                missing_evidence=list(hypothesis.missing_evidence),
-                recommended_test=hypothesis.validation_test.description,
-                expected_true_result=hypothesis.validation_test.expected_if_true,
-                expected_false_result=hypothesis.validation_test.expected_if_false,
+                trigger=risk.trigger,
+                mitigation=risk.mitigation,
+                confidence=risk.confidence,
             )
-            for hypothesis in hypotheses_result.output.hypotheses
+            for risk in bias_result.output.risks
         ]
         self.require_complete_core_results(analysis_run)
         self.apply_completed_state(analysis_run)
         self.commit(
             analysis_run,
             failure_message="The completed analysis results could not be saved.",
+        )
+
+    @staticmethod
+    def _build_fact(
+        fact: ValidatedFactV1,
+    ) -> Fact:
+        supporting_excerpt = next(
+            (
+                evidence.reference.excerpt
+                for evidence in fact.evidence
+                if evidence.status is EvidenceReferenceValidationStatus.VALID
+                and evidence.reference.excerpt is not None
+            ),
+            None,
+        )
+        return Fact(
+            claim=fact.claim,
+            support_status=fact.support_status,
+            confidence=fact.confidence,
+            evidence_codes=list(
+                dict.fromkeys(
+                    evidence.reference.evidence_id for evidence in fact.evidence
+                )
+            ),
+            supporting_excerpt=supporting_excerpt,
+        )
+
+    @staticmethod
+    def _build_hypothesis(
+        hypothesis: ValidatedHypothesisV1,
+    ) -> Hypothesis:
+        return Hypothesis(
+            rank=hypothesis.rank,
+            title=hypothesis.title,
+            explanation=hypothesis.explanation,
+            confidence=hypothesis.adjusted_confidence,
+            supporting_evidence_codes=list(
+                dict.fromkeys(
+                    evidence.reference.reference.evidence_id
+                    for evidence in hypothesis.supporting_evidence
+                )
+            ),
+            contradicting_evidence_codes=list(
+                dict.fromkeys(
+                    evidence.reference.reference.evidence_id
+                    for evidence in hypothesis.contradicting_evidence
+                )
+            ),
+            missing_evidence=list(hypothesis.missing_evidence),
+            recommended_test=hypothesis.validation_test.description,
+            expected_true_result=hypothesis.validation_test.expected_if_true,
+            expected_false_result=hypothesis.validation_test.expected_if_false,
         )
 
     def persist_failed_analysis(
@@ -192,14 +231,56 @@ class AnalysisResultPersistence:
     @staticmethod
     def extract_summary_output(raw_response: str | None) -> SummaryOutputV1 | None:
         """Read only the validated summary from an internal audit envelope."""
+        return AnalysisResultPersistence._extract_stage_output(
+            raw_response,
+            analysis_stage=AnalysisStage.SUMMARY,
+            output_type=SummaryOutputV1,
+        )
+
+    @staticmethod
+    def extract_critic_output(raw_response: str | None) -> CriticOutputV1 | None:
+        """Read only the separate validated critic output from internal audit."""
+        return AnalysisResultPersistence._extract_stage_output(
+            raw_response,
+            analysis_stage=AnalysisStage.CRITIC,
+            output_type=CriticOutputV1,
+        )
+
+    @staticmethod
+    def extract_timeline_output(raw_response: str | None) -> TimelineOutputV1 | None:
+        """Read only the validated timeline from an internal audit envelope."""
+        return AnalysisResultPersistence._extract_stage_output(
+            raw_response,
+            analysis_stage=AnalysisStage.TIMELINE,
+            output_type=TimelineOutputV1,
+        )
+
+    @staticmethod
+    def extract_open_questions_output(
+        raw_response: str | None,
+    ) -> OpenQuestionsOutputV1 | None:
+        """Read actionable open questions from the internal audit envelope."""
+        return AnalysisResultPersistence._extract_stage_output(
+            raw_response,
+            analysis_stage=AnalysisStage.OPEN_QUESTIONS,
+            output_type=OpenQuestionsOutputV1,
+        )
+
+    @staticmethod
+    def _extract_stage_output(
+        raw_response: str | None,
+        *,
+        analysis_stage: AnalysisStage,
+        output_type: type[StageOutputT],
+    ) -> StageOutputT | None:
         if raw_response is None:
             return None
         try:
             audit_envelope = json.loads(raw_response)
-            parsed_output = audit_envelope["stages"][AnalysisStage.SUMMARY.value][
+            parsed_output = audit_envelope["stages"][analysis_stage.value][
                 "parsed_output"
             ]
-            return SummaryOutputV1.model_validate(parsed_output)
+            return output_type.model_validate(parsed_output)
         except (json.JSONDecodeError, KeyError, TypeError, ValidationError):
             return None
 
@@ -207,15 +288,21 @@ class AnalysisResultPersistence:
     def require_complete_core_results(analysis_run: AnalysisRun) -> None:
         """Require all core prompts, audits, evidence, and hypotheses before completion."""
         required_stages = {
+            AnalysisStage.BIAS.value,
+            AnalysisStage.CRITIC.value,
             AnalysisStage.SUMMARY.value,
             AnalysisStage.TIMELINE.value,
             AnalysisStage.HYPOTHESES.value,
+            AnalysisStage.OPEN_QUESTIONS.value,
         }
         required_prompts = {
+            PromptName.BIAS.value,
+            PromptName.CRITIC.value,
             PromptName.SYSTEM.value,
             PromptName.SUMMARY.value,
             PromptName.TIMELINE.value,
             PromptName.HYPOTHESES.value,
+            PromptName.OPEN_QUESTIONS.value,
         }
         try:
             audit_envelope = json.loads(analysis_run.raw_response or "")
@@ -234,6 +321,7 @@ class AnalysisResultPersistence:
             or not analysis_run.input_evidence_codes
             or not stage_records_are_complete
             or len(analysis_run.hypotheses) < 3
+            or len(analysis_run.bias_flags) < 5
         ):
             raise AnalysisRunTransitionError(
                 f"Analysis run {analysis_run.id} cannot transition to COMPLETED "

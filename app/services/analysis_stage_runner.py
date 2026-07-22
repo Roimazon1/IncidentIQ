@@ -7,12 +7,21 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import AnalysisRun, EvidenceItem
-from app.schemas.ai_outputs import AIOutput, HypothesesOutputV1
+from app.models import AnalysisRun, ClaimSupportStatus, EvidenceItem
+from app.schemas.ai_outputs import (
+    AIOutput,
+    HypothesesOutputV1,
+    OpenQuestionSourceKind,
+    OpenQuestionsOutputV1,
+    ReasoningRisksOutputV1,
+)
 from app.schemas.ai_provider import (
     AIRequest,
     AIResult,
     AnalysisStage,
+    BiasContextV1,
+    CriticContextV1,
+    OpenQuestionsContextV1,
     OutputSchemaIdentifier,
     PromptBundle,
     PromptName,
@@ -22,7 +31,9 @@ from app.schemas.ai_provider import (
 )
 from app.schemas.evidence import EvidenceManifest, EvidenceManifestSource
 from app.services.ai_provider import AIProvider
+from app.services.bias_service import BiasAnalysisError, BiasService
 from app.services.evidence_manifest_service import EvidenceManifestService
+from app.services.validation_service import ValidationService
 
 
 StageOutputT = TypeVar("StageOutputT", bound=BaseModel)
@@ -102,22 +113,42 @@ class AnalysisStageRunner:
         analysis_stage: AnalysisStage,
         output_schema: OutputSchemaIdentifier,
         output_type: type[StageOutputT],
+        critic_context: CriticContextV1 | None = None,
+        bias_context: BiasContextV1 | None = None,
+        open_questions_context: OpenQuestionsContextV1 | None = None,
     ) -> AIResult[StageOutputT]:
         """Execute one typed stage and enforce exact request/result traceability."""
+        if critic_context is not None:
+            self._validate_critic_context(critic_context, evidence_manifest)
+        if bias_context is not None:
+            self._validate_bias_context(bias_context, evidence_manifest)
+        if open_questions_context is not None:
+            self._validate_open_questions_context(
+                open_questions_context,
+                evidence_manifest,
+            )
         request = self._build_stage_request(
             analysis_run,
             evidence_manifest,
             task_prompt=task_prompt,
             analysis_stage=analysis_stage,
             output_schema=output_schema,
+            critic_context=critic_context,
+            bias_context=bias_context,
+            open_questions_context=open_questions_context,
         )
         result = self._require_ai_provider().generate(request)
-        return self._validate_stage_result(
+        typed_result = self._validate_stage_result(
             result,
             request=request,
             analysis_run=analysis_run,
             output_type=output_type,
         )
+        ValidationService.validate_output_references(
+            typed_result.output,
+            evidence_manifest,
+        )
+        return typed_result
 
     @staticmethod
     def require_materially_distinct_hypotheses(
@@ -136,12 +167,145 @@ class AnalysisStageRunner:
                 raw_response=raw_response,
             )
 
+    @staticmethod
+    def require_required_reasoning_risks(
+        output: ReasoningRisksOutputV1,
+        *,
+        raw_response: str | None = None,
+    ) -> None:
+        """Require every locked core reasoning-risk warning category."""
+        try:
+            BiasService.identify_risks(output)
+        except BiasAnalysisError as exc:
+            raise AnalysisStageOutputError(
+                str(exc),
+                raw_response=raw_response,
+            ) from exc
+
+    @staticmethod
+    def require_traceable_open_questions(
+        output: OpenQuestionsOutputV1,
+        context: OpenQuestionsContextV1,
+        *,
+        raw_response: str | None = None,
+    ) -> None:
+        """Require every question to reference an unresolved typed analysis item."""
+        analysis = context.analysis_context
+        allowed_sources = {
+            *(
+                (OpenQuestionSourceKind.UNRESOLVED_CLAIM, fact.claim)
+                for fact in analysis.validated_analysis.facts
+                if fact.support_status is not ClaimSupportStatus.SUPPORTED
+            ),
+            *(
+                (OpenQuestionSourceKind.UNRESOLVED_CLAIM, finding.affected_claim)
+                for finding in analysis.critic.findings
+            ),
+            *(
+                (OpenQuestionSourceKind.HYPOTHESIS, hypothesis.hypothesis_id)
+                for hypothesis in analysis.validated_analysis.hypotheses
+            ),
+            *(
+                (
+                    OpenQuestionSourceKind.CONTRADICTION,
+                    AnalysisStageRunner.build_contradiction_source_reference(
+                        hypothesis.hypothesis_id,
+                        evidence.reference.reference.evidence_id,
+                        evidence.reference.reference.line_range,
+                    ),
+                )
+                for hypothesis in analysis.validated_analysis.hypotheses
+                for evidence in hypothesis.contradicting_evidence
+            ),
+            *(
+                (OpenQuestionSourceKind.ASSUMPTION, assumption.claim)
+                for assumption in analysis.original_analysis.summary.assumptions
+            ),
+            *(
+                (OpenQuestionSourceKind.MISSING_EVIDENCE, missing_evidence)
+                for hypothesis in analysis.validated_analysis.hypotheses
+                for missing_evidence in hypothesis.missing_evidence
+            ),
+        }
+        if any(
+            (question.source_kind, question.source_reference) not in allowed_sources
+            for question in output.questions
+        ):
+            raise AnalysisStageOutputError(
+                "The open-question output contains an untraceable analysis source.",
+                raw_response=raw_response,
+            )
+
+    @staticmethod
+    def build_contradiction_source_reference(
+        hypothesis_id: str,
+        evidence_id: str,
+        line_range: str,
+    ) -> str:
+        """Return the stable reference for one typed contradicting evidence item."""
+        return f"{hypothesis_id}|{evidence_id}|{line_range}"
+
     def _require_ai_provider(self) -> AIProvider:
         if self._ai_provider is None:
             raise AnalysisProviderRequiredError(
                 "An AI provider is required to run analysis stages."
             )
         return self._ai_provider
+
+    @staticmethod
+    def _validate_critic_context(
+        critic_context: CriticContextV1,
+        evidence_manifest: EvidenceManifest,
+    ) -> None:
+        for initial_output in (
+            critic_context.summary,
+            critic_context.timeline,
+            critic_context.hypotheses,
+        ):
+            ValidationService.validate_output_references(
+                initial_output,
+                evidence_manifest,
+            )
+
+    @classmethod
+    def _validate_bias_context(
+        cls,
+        bias_context: BiasContextV1,
+        evidence_manifest: EvidenceManifest,
+    ) -> None:
+        cls._validate_critic_context(
+            bias_context.original_analysis,
+            evidence_manifest,
+        )
+        expected_validated_analysis = ValidationService.build_validated_analysis_view(
+            bias_context.original_analysis.summary,
+            bias_context.original_analysis.timeline,
+            bias_context.original_analysis.hypotheses,
+            evidence_manifest,
+        )
+        if bias_context.validated_analysis != expected_validated_analysis:
+            raise AnalysisStageOutputError(
+                "The bias request contains inconsistent deterministic validation data."
+            )
+        ValidationService.validate_output_references(
+            bias_context.critic,
+            evidence_manifest,
+        )
+
+    @classmethod
+    def _validate_open_questions_context(
+        cls,
+        context: OpenQuestionsContextV1,
+        evidence_manifest: EvidenceManifest,
+    ) -> None:
+        cls._validate_bias_context(
+            context.analysis_context,
+            evidence_manifest,
+        )
+        try:
+            BiasService.identify_risks(context.reasoning_risks)
+        except BiasAnalysisError as exc:
+            raise AnalysisStageOutputError(str(exc)) from exc
 
     @staticmethod
     def _validate_stage_result(
@@ -181,6 +345,9 @@ class AnalysisStageRunner:
         task_prompt: PromptName,
         analysis_stage: AnalysisStage,
         output_schema: OutputSchemaIdentifier,
+        critic_context: CriticContextV1 | None = None,
+        bias_context: BiasContextV1 | None = None,
+        open_questions_context: OpenQuestionsContextV1 | None = None,
     ) -> AIRequest:
         manifest_checksum = sha256(
             evidence_manifest.model_dump_json().encode("utf-8")
@@ -198,6 +365,9 @@ class AnalysisStageRunner:
                 ),
             ),
             output_schema=output_schema,
+            critic_context=critic_context,
+            bias_context=bias_context,
+            open_questions_context=open_questions_context,
             metadata=SafeAIMetadata(
                 request_identifier=(
                     f"analysis-run-{analysis_run.id}-{analysis_stage.value}"

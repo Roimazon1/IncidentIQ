@@ -16,6 +16,7 @@ from app.schemas.ai_outputs import (
     AIOutput,
     CriticOutputV1,
     HypothesesOutputV1,
+    OpenQuestionsOutputV1,
     ReasoningRisksOutputV1,
     SummaryOutputV1,
     TimelineOutputV1,
@@ -157,6 +158,7 @@ _OUTPUT_MODELS: dict[OutputSchemaIdentifier, type[AIOutput]] = {
     OutputSchemaIdentifier.HYPOTHESES_V1: HypothesesOutputV1,
     OutputSchemaIdentifier.CRITIC_V1: CriticOutputV1,
     OutputSchemaIdentifier.REASONING_RISKS_V1: ReasoningRisksOutputV1,
+    OutputSchemaIdentifier.OPEN_QUESTIONS_V1: OpenQuestionsOutputV1,
 }
 
 _SAFE_FAILURE_EXPLANATIONS = {

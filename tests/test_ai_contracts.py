@@ -19,12 +19,16 @@ from app.schemas.ai_outputs import (
     HypothesesOutputV1,
     HypothesisV1,
     HypothesisValidationTestV1,
+    OpenQuestionSourceKind,
+    OpenQuestionsOutputV1,
+    OpenQuestionV1,
     ReasoningRiskV1,
     RecommendedActionV1,
     SummaryAndImpactV1,
     SummaryOutputV1,
     SupportingEvidenceV1,
     TimelineEventV1,
+    TimelineOutputV1,
 )
 from app.schemas.ai_provider import (
     AIFailureCategory,
@@ -33,6 +37,8 @@ from app.schemas.ai_provider import (
     AIResult,
     AIResultMetadata,
     AnalysisStage,
+    BiasContextV1,
+    CriticContextV1,
     FailureAuditData,
     OutputSchemaIdentifier,
     PromptBundle,
@@ -48,6 +54,7 @@ from app.schemas.evidence import (
     EvidenceManifestItem,
     EvidenceManifestTimestamp,
 )
+from app.services.validation_service import ValidationService
 
 
 def _manifest() -> EvidenceManifest:
@@ -165,6 +172,26 @@ def _hypothesis(index: int) -> HypothesisV1:
     )
 
 
+def _critic_context() -> CriticContextV1:
+    return CriticContextV1(
+        summary=_summary(),
+        timeline=TimelineOutputV1(
+            events=(
+                TimelineEventV1(
+                    timestamp="time unknown",
+                    description="Checkout failed.",
+                    evidence=(_reference(),),
+                    is_inferred=False,
+                    confidence=90,
+                ),
+            ),
+        ),
+        hypotheses=HypothesesOutputV1(
+            hypotheses=(_hypothesis(1), _hypothesis(2), _hypothesis(3)),
+        ),
+    )
+
+
 def _result_metadata() -> AIResultMetadata:
     return AIResultMetadata(
         provider_name="fake",
@@ -230,6 +257,120 @@ def test_ai_request_accepts_only_typed_redacted_input() -> None:
     assert "[REDACTED_API_KEY]" in serialized
     assert "original_text" not in serialized
     assert "user_prompt" not in serialized
+
+
+def test_critic_request_requires_typed_initial_analysis_context() -> None:
+    request = AIRequest(
+        evidence_manifest=_manifest(),
+        prompts=PromptBundle(
+            system=_prompt_bundle().system,
+            task=PromptReference(name=PromptName.CRITIC, version=PromptVersion.V1),
+        ),
+        output_schema=OutputSchemaIdentifier.CRITIC_V1,
+        metadata=SafeAIMetadata(
+            request_identifier="req-critic",
+            incident_public_identifier="INC-000001",
+            analysis_stage=AnalysisStage.CRITIC,
+            evidence_manifest_checksum="a" * 64,
+        ),
+        critic_context=_critic_context(),
+    )
+
+    serialized = request.model_dump_json()
+
+    assert request.critic_context.hypotheses.hypotheses[0].title == "Possible cause 1"
+    assert '"critic_context"' in serialized
+    assert '"raw_response"' not in serialized
+    assert '"audit"' not in serialized
+
+
+def test_critic_request_rejects_missing_initial_analysis_context() -> None:
+    with pytest.raises(ValidationError, match="require validated initial analysis"):
+        AIRequest(
+            evidence_manifest=_manifest(),
+            prompts=PromptBundle(
+                system=_prompt_bundle().system,
+                task=PromptReference(
+                    name=PromptName.CRITIC,
+                    version=PromptVersion.V1,
+                ),
+            ),
+            output_schema=OutputSchemaIdentifier.CRITIC_V1,
+            metadata=SafeAIMetadata(
+                request_identifier="req-critic",
+                incident_public_identifier="INC-000001",
+                analysis_stage=AnalysisStage.CRITIC,
+            ),
+        )
+
+
+def test_non_critic_request_rejects_critic_context() -> None:
+    with pytest.raises(ValidationError, match="only accepted for critic requests"):
+        AIRequest(
+            evidence_manifest=_manifest(),
+            prompts=_prompt_bundle(),
+            output_schema=OutputSchemaIdentifier.SUMMARY_V1,
+            metadata=_metadata(),
+            critic_context=_critic_context(),
+        )
+
+
+def test_bias_request_requires_typed_analysis_and_critic_context() -> None:
+    hypotheses = (_hypothesis(1), _hypothesis(2), _hypothesis(3))
+    critic = _complete_analysis_for_ranking(hypotheses).critic
+    original_analysis = _critic_context()
+    bias_context = BiasContextV1(
+        original_analysis=original_analysis,
+        validated_analysis=ValidationService.build_validated_analysis_view(
+            original_analysis.summary,
+            original_analysis.timeline,
+            original_analysis.hypotheses,
+            _manifest(),
+        ),
+        critic=critic,
+    )
+
+    request = AIRequest(
+        evidence_manifest=_manifest(),
+        prompts=PromptBundle(
+            system=_prompt_bundle().system,
+            task=PromptReference(name=PromptName.BIAS, version=PromptVersion.V1),
+        ),
+        output_schema=OutputSchemaIdentifier.REASONING_RISKS_V1,
+        metadata=SafeAIMetadata(
+            request_identifier="req-bias",
+            incident_public_identifier="INC-000001",
+            analysis_stage=AnalysisStage.BIAS,
+        ),
+        bias_context=bias_context,
+    )
+
+    serialized = request.model_dump_json()
+
+    assert request.bias_context == bias_context
+    assert '"bias_context"' in serialized
+    assert '"raw_response"' not in serialized
+    assert '"audit"' not in serialized
+
+
+def test_bias_request_rejects_missing_analysis_context() -> None:
+    with pytest.raises(ValidationError, match="bias requests require"):
+        AIRequest(
+            evidence_manifest=_manifest(),
+            prompts=PromptBundle(
+                system=_prompt_bundle().system,
+                task=PromptReference(
+                    name=PromptName.BIAS,
+                    version=PromptVersion.V1,
+                ),
+            ),
+            output_schema=OutputSchemaIdentifier.REASONING_RISKS_V1,
+            metadata=SafeAIMetadata(
+                request_identifier="req-bias",
+                incident_public_identifier="INC-000001",
+                analysis_stage=AnalysisStage.BIAS,
+            ),
+        )
 
 
 @pytest.mark.parametrize(
@@ -315,6 +456,7 @@ def test_provider_call_output_schema_identifiers_are_stage_only() -> None:
         "hypotheses_v1",
         "critic_v1",
         "reasoning_risks_v1",
+        "open_questions_v1",
     }
 
 
@@ -371,16 +513,17 @@ def test_inferred_timeline_event_accepts_confidence_of_70() -> None:
     assert event.confidence == 70
 
 
-def test_inferred_timeline_event_rejects_confidence_of_71() -> None:
-    with pytest.raises(ValidationError, match="cannot exceed 70"):
-        TimelineEventV1(
-            timestamp="time unknown",
-            description="A failure may have started.",
-            evidence=(_reference(),),
-            is_inferred=True,
-            confidence=71,
-            uncertainty_explanation="The evidence has no direct timestamp.",
-        )
+def test_inferred_timeline_event_retains_provider_confidence_above_cap() -> None:
+    event = TimelineEventV1(
+        timestamp="time unknown",
+        description="A failure may have started.",
+        evidence=(_reference(),),
+        is_inferred=True,
+        confidence=95,
+        uncertainty_explanation="The evidence has no direct timestamp.",
+    )
+
+    assert event.confidence == 95
 
 
 def test_hypothesis_requires_a_typed_validation_test() -> None:
@@ -493,7 +636,16 @@ def test_complete_analysis_composes_smaller_typed_outputs() -> None:
                 operational_risk="Read-only comparison has low risk.",
             ),
         ),
-        open_questions=("What changed in the deployment?",),
+        open_questions=(
+            OpenQuestionV1(
+                question="What changed in the deployment?",
+                source_kind=OpenQuestionSourceKind.ASSUMPTION,
+                source_reference="A deployment may be related.",
+                rationale="The deployment relationship remains unverified.",
+                evidence_needed=("Deployment history",),
+                resolution_criteria="The history confirms or rules out a change.",
+            ),
+        ),
         reasoning_risks=(
             ReasoningRiskV1(
                 name="Anchoring bias",
@@ -512,6 +664,10 @@ def test_complete_analysis_composes_smaller_typed_outputs() -> None:
         complete.hypotheses[0].validation_test, HypothesisValidationTestV1
     )
     assert isinstance(complete.critic, CriticOutputV1)
+    assert isinstance(
+        OpenQuestionsOutputV1(questions=complete.open_questions),
+        OpenQuestionsOutputV1,
+    )
     assert isinstance(ActionsOutputV1(actions=complete.actions), ActionsOutputV1)
 
 

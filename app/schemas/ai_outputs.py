@@ -98,13 +98,11 @@ class TimelineEventV1(StrictAIOutputModel):
 
     @model_validator(mode="after")
     def require_inference_explanation(self) -> TimelineEventV1:
-        """Enforce uncertainty details and the inferred-confidence ceiling."""
+        """Require explicit uncertainty context for every inferred event."""
         if self.is_inferred and self.uncertainty_explanation is None:
             raise ValueError(
                 "inferred timeline events require an uncertainty explanation"
             )
-        if self.is_inferred and self.confidence > 70:
-            raise ValueError("inferred timeline event confidence cannot exceed 70")
         return self
 
 
@@ -215,6 +213,33 @@ class ReasoningRisksOutputV1(StrictAIOutputModel):
     risks: tuple[ReasoningRiskV1, ...]
 
 
+class OpenQuestionSourceKind(StrEnum):
+    """Allowlisted unresolved analysis elements an open question may trace to."""
+
+    UNRESOLVED_CLAIM = "UNRESOLVED_CLAIM"
+    HYPOTHESIS = "HYPOTHESIS"
+    CONTRADICTION = "CONTRADICTION"
+    ASSUMPTION = "ASSUMPTION"
+    MISSING_EVIDENCE = "MISSING_EVIDENCE"
+
+
+class OpenQuestionV1(StrictAIOutputModel):
+    """An actionable unresolved question and the evidence needed to answer it."""
+
+    question: NonBlankText
+    source_kind: OpenQuestionSourceKind
+    source_reference: NonBlankText
+    rationale: NonBlankText
+    evidence_needed: tuple[NonBlankText, ...] = Field(min_length=1)
+    resolution_criteria: NonBlankText
+
+
+class OpenQuestionsOutputV1(StrictAIOutputModel):
+    """Version-one actionable open-question output."""
+
+    questions: tuple[OpenQuestionV1, ...] = Field(min_length=1)
+
+
 class CriticFindingV1(StrictAIOutputModel):
     """One adversarial finding about a potentially weak conclusion."""
 
@@ -243,7 +268,7 @@ class CompleteAnalysisOutputV1(StrictAIOutputModel):
     timeline: tuple[TimelineEventV1, ...]
     hypotheses: RankedHypotheses
     actions: tuple[RecommendedActionV1, ...]
-    open_questions: tuple[NonBlankText, ...]
+    open_questions: tuple[OpenQuestionV1, ...]
     reasoning_risks: tuple[ReasoningRiskV1, ...]
     critic: CriticOutputV1
 
@@ -254,6 +279,7 @@ AIOutput: TypeAlias = (
     | HypothesesOutputV1
     | ActionsOutputV1
     | ReasoningRisksOutputV1
+    | OpenQuestionsOutputV1
     | CriticOutputV1
     | CompleteAnalysisOutputV1
 )
