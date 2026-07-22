@@ -14,44 +14,26 @@ from pydantic import (
     model_validator,
 )
 
-from app.schemas.ai_outputs import (
-    AIOutput,
-    CriticOutputV1,
-    HypothesesOutputV1,
-    ReasoningRisksOutputV1,
-    SummaryOutputV1,
-    TimelineOutputV1,
-)
+from app.schemas.ai_outputs import AIOutput
 from app.schemas.ai_provider import (
     AIFailureCategory,
-    AIFailureDetails,
     AIRequest,
     AIResult,
-    AIResultMetadata,
-    FailureAuditData,
-    OutputSchemaIdentifier,
-    SuccessAuditData,
 )
 from app.services.ai_provider import (
     AIProviderConfigurationError,
-    AIProviderExecutionError,
+    build_ai_result,
+    process_structured_response,
+    raise_ai_provider_failure,
+    select_output_model,
 )
 
-
-_OUTPUT_MODELS: dict[OutputSchemaIdentifier, type[BaseModel]] = {
-    OutputSchemaIdentifier.SUMMARY_V1: SummaryOutputV1,
-    OutputSchemaIdentifier.TIMELINE_V1: TimelineOutputV1,
-    OutputSchemaIdentifier.HYPOTHESES_V1: HypothesesOutputV1,
-    OutputSchemaIdentifier.CRITIC_V1: CriticOutputV1,
-    OutputSchemaIdentifier.REASONING_RISKS_V1: ReasoningRisksOutputV1,
-}
-
-_SIMULATED_FAILURE_EXPLANATIONS = {
-    AIFailureCategory.TRANSIENT_PROVIDER_FAILURE: (
-        "The AI provider temporarily failed."
-    ),
-    AIFailureCategory.AUTHENTICATION: "The AI provider rejected its credentials.",
-}
+_SIMULATED_FAILURE_CATEGORIES = frozenset(
+    {
+        AIFailureCategory.TRANSIENT_PROVIDER_FAILURE,
+        AIFailureCategory.AUTHENTICATION,
+    }
+)
 
 
 class _FakeResponseFixture(BaseModel):
@@ -69,7 +51,7 @@ class _FakeResponseFixture(BaseModel):
         has_failure = self.failure_category is not None
         if has_response == has_failure:
             raise ValueError("fixture must define exactly one response or failure")
-        if has_failure and self.failure_category not in _SIMULATED_FAILURE_EXPLANATIONS:
+        if has_failure and self.failure_category not in _SIMULATED_FAILURE_CATEGORIES:
             raise ValueError("fixture contains an unsupported simulated failure")
         return self
 
@@ -106,77 +88,41 @@ class FakeAIProvider:
 
     def generate(self, request: AIRequest) -> AIResult[AIOutput]:
         """Parse and validate the configured fixture as the requested output type."""
+        output_model = select_output_model(request)
         fixture = self._fixture
         if fixture.failure_category is not None:
-            self._raise_failure(
+            raise_ai_provider_failure(
                 request=request,
                 category=fixture.failure_category,
-                explanation=_SIMULATED_FAILURE_EXPLANATIONS[fixture.failure_category],
+                attempt_count=1,
             )
 
         raw_response = fixture.raw_response
         if raw_response is None or fixture.output_schema != request.output_schema.value:
-            self._raise_failure(
+            raise_ai_provider_failure(
                 request=request,
                 category=AIFailureCategory.UNSUPPORTED_OUTPUT_SCHEMA,
-                explanation="The fake response does not support the requested schema.",
-                raw_response=raw_response,
-            )
-
-        try:
-            response_data = json.loads(raw_response)
-        except json.JSONDecodeError:
-            self._raise_failure(
-                request=request,
-                category=AIFailureCategory.MALFORMED_JSON,
-                explanation="The AI provider returned malformed JSON.",
-                raw_response=raw_response,
-            )
-
-        output_model = _OUTPUT_MODELS[request.output_schema]
-        try:
-            output = output_model.model_validate(response_data)
-        except ValidationError:
-            self._raise_failure(
-                request=request,
-                category=AIFailureCategory.SCHEMA_VALIDATION,
-                explanation="The AI provider response failed schema validation.",
-                raw_response=raw_response,
-            )
-
-        return AIResult[AIOutput](
-            output=output,
-            metadata=AIResultMetadata(
-                provider_name=self.provider_name,
-                model_name=self.model_name,
-                system_prompt=request.prompts.system,
-                task_prompt=request.prompts.task,
-                analysis_stage=request.metadata.analysis_stage,
-                output_schema=request.output_schema,
-                request_identifier=request.metadata.request_identifier,
                 attempt_count=1,
-            ),
-            audit=SuccessAuditData(raw_response=raw_response),
-        )
+                raw_response=raw_response,
+            )
 
-    @staticmethod
-    def _raise_failure(
-        *,
-        request: AIRequest,
-        category: AIFailureCategory,
-        explanation: str,
-        raw_response: str | None = None,
-    ) -> None:
-        audit = FailureAuditData(
-            request_identifier=request.metadata.request_identifier,
+        outcome = process_structured_response(raw_response, output_model)
+        if outcome.failure_category is not None:
+            raise_ai_provider_failure(
+                request=request,
+                category=outcome.failure_category,
+                attempt_count=1,
+                raw_response=raw_response,
+            )
+
+        output = outcome.output
+        if output is None:
+            raise AssertionError("validated fake response did not contain output")
+        return build_ai_result(
+            request=request,
+            output=output,
+            provider_name=self.provider_name,
+            model_name=self.model_name,
             attempt_count=1,
             raw_response=raw_response,
-        )
-        raise AIProviderExecutionError(
-            AIFailureDetails(
-                category=category,
-                request_identifier=request.metadata.request_identifier,
-                explanation=explanation,
-                audit=audit,
-            )
         )

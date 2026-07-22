@@ -6,34 +6,26 @@ import json
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Never, TypedDict
+from typing import TYPE_CHECKING, TypedDict
 
-from pydantic import BaseModel, TypeAdapter, ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from app.config import Settings
-from app.schemas.ai_outputs import (
-    AIOutput,
-    CriticOutputV1,
-    HypothesesOutputV1,
-    ReasoningRisksOutputV1,
-    SummaryOutputV1,
-    TimelineOutputV1,
-)
+from app.schemas.ai_outputs import AIOutput
 from app.schemas.ai_provider import (
     AIFailureCategory,
-    AIFailureDetails,
     AIRequest,
     AIResult,
-    AIResultMetadata,
-    FailureAuditData,
     LogSafeName,
-    OutputSchemaIdentifier,
     PromptReference,
-    SuccessAuditData,
 )
 from app.services.ai_provider import (
     AIProviderConfigurationError,
-    AIProviderExecutionError,
+    BoundedRetryPolicy,
+    build_ai_result,
+    process_structured_response,
+    raise_ai_provider_failure,
+    select_output_model,
 )
 
 if TYPE_CHECKING:
@@ -130,14 +122,6 @@ Sleeper = Callable[[float], None]
 DEFAULT_MAX_ATTEMPTS = 3
 DEFAULT_RETRY_DELAY_SECONDS = 1.0
 
-_OUTPUT_MODELS: dict[OutputSchemaIdentifier, type[BaseModel]] = {
-    OutputSchemaIdentifier.SUMMARY_V1: SummaryOutputV1,
-    OutputSchemaIdentifier.TIMELINE_V1: TimelineOutputV1,
-    OutputSchemaIdentifier.HYPOTHESES_V1: HypothesesOutputV1,
-    OutputSchemaIdentifier.CRITIC_V1: CriticOutputV1,
-    OutputSchemaIdentifier.REASONING_RISKS_V1: ReasoningRisksOutputV1,
-}
-
 _GEMINI_SCHEMA_KEYS = frozenset(
     {
         "$defs",
@@ -222,11 +206,10 @@ class GeminiAIProvider:
     ) -> None:
         self.model_name = self._validate_model_name(model_name)
         self._prompt_resolver = prompt_resolver
-        self._max_attempts = self._validate_retry_configuration(
-            max_attempts,
-            retry_delay_seconds,
+        self._retry_policy = BoundedRetryPolicy(
+            max_attempts=max_attempts,
+            retry_delay_seconds=retry_delay_seconds,
         )
-        self._retry_delay_seconds = retry_delay_seconds
         self._sleeper = sleeper
         self._api_error_type = api_error_type
         self._client = (
@@ -262,8 +245,8 @@ class GeminiAIProvider:
 
     def generate(self, request: AIRequest) -> AIResult[AIOutput]:
         """Call Gemini with redacted data and return only locally validated output."""
+        output_model = select_output_model(request)
         system_prompt, task_prompt = self._resolve_prompts(request)
-        output_model = _OUTPUT_MODELS[request.output_schema]
         contents = self._build_contents(request, task_prompt)
         config: GeminiGenerateConfig = {
             "system_instruction": system_prompt,
@@ -273,7 +256,7 @@ class GeminiAIProvider:
             ),
         }
 
-        for attempt_count in range(1, self._max_attempts + 1):
+        for attempt_count in self._retry_policy.attempt_numbers:
             # noinspection PyBroadException
             try:
                 response = self._client.models.generate_content(
@@ -301,69 +284,48 @@ class GeminiAIProvider:
             except Exception:
                 # Third-party and injected clients can raise undocumented exceptions.
                 # Sanitize them at this boundary and never retry them.
-                self._raise_failure(
+                raise_ai_provider_failure(
                     request=request,
                     category=AIFailureCategory.TRANSIENT_PROVIDER_FAILURE,
-                    explanation="The AI provider request failed safely.",
                     attempt_count=attempt_count,
                 )
 
             # noinspection PyBroadException
             try:
-                raw_response = self._extract_response_text(response)
+                raw_response = response.text
             except Exception:
                 # Response properties are third-party code and can fail unexpectedly.
                 # Unknown extraction failures are sanitized without another attempt.
-                self._raise_failure(
+                raise_ai_provider_failure(
                     request=request,
                     category=AIFailureCategory.TRANSIENT_PROVIDER_FAILURE,
-                    explanation="The AI provider response could not be read safely.",
                     attempt_count=attempt_count,
                 )
-            if raw_response is None:
-                if attempt_count < self._max_attempts:
-                    self._sleep_before_retry(attempt_count)
-                    continue
-                self._raise_failure(
-                    request=request,
-                    category=AIFailureCategory.EXHAUSTED_RETRIES,
-                    explanation=self._failure_explanation(
-                        AIFailureCategory.EXHAUSTED_RETRIES
-                    ),
-                    attempt_count=attempt_count,
-                )
-
-            output, failure_category = self._validate_response(
+            outcome = process_structured_response(
                 raw_response,
                 output_model,
             )
-            if failure_category is not None:
-                if attempt_count < self._max_attempts:
+            if outcome.failure_category is not None:
+                if self._retry_policy.has_next_attempt(attempt_count):
                     self._sleep_before_retry(attempt_count)
                     continue
-                self._raise_failure(
+                raise_ai_provider_failure(
                     request=request,
                     category=AIFailureCategory.EXHAUSTED_RETRIES,
-                    explanation=self._failure_explanation(
-                        AIFailureCategory.EXHAUSTED_RETRIES
-                    ),
                     attempt_count=attempt_count,
                     raw_response=raw_response,
                 )
 
-            return AIResult[AIOutput](
+            output = outcome.output
+            if output is None or raw_response is None:
+                raise AssertionError("validated Gemini response did not contain output")
+            return build_ai_result(
+                request=request,
                 output=output,
-                metadata=AIResultMetadata(
-                    provider_name=self.provider_name,
-                    model_name=self.model_name,
-                    system_prompt=request.prompts.system,
-                    task_prompt=request.prompts.task,
-                    analysis_stage=request.metadata.analysis_stage,
-                    output_schema=request.output_schema,
-                    request_identifier=request.metadata.request_identifier,
-                    attempt_count=attempt_count,
-                ),
-                audit=SuccessAuditData(raw_response=raw_response),
+                provider_name=self.provider_name,
+                model_name=self.model_name,
+                attempt_count=attempt_count,
+                raw_response=raw_response,
             )
 
         raise AssertionError("bounded Gemini attempt loop did not return or raise")
@@ -376,25 +338,6 @@ class GeminiAIProvider:
             raise AIProviderConfigurationError(
                 "Gemini provider configuration requires a valid GEMINI_MODEL."
             ) from None
-
-    @staticmethod
-    def _validate_retry_configuration(
-        max_attempts: int,
-        retry_delay_seconds: float,
-    ) -> int:
-        if not isinstance(max_attempts, int) or isinstance(max_attempts, bool):
-            raise AIProviderConfigurationError(
-                "Gemini provider maximum attempts must be a positive integer."
-            )
-        if max_attempts < 1:
-            raise AIProviderConfigurationError(
-                "Gemini provider maximum attempts must be a positive integer."
-            )
-        if retry_delay_seconds < 0:
-            raise AIProviderConfigurationError(
-                "Gemini provider retry delay must not be negative."
-            )
-        return max_attempts
 
     @staticmethod
     def _create_real_client(api_key: str | None) -> GeminiClientProtocol:
@@ -428,18 +371,16 @@ class GeminiAIProvider:
             system_prompt = self._prompt_resolver(request.prompts.system)
             task_prompt = self._prompt_resolver(request.prompts.task)
         except (LookupError, OSError, UnicodeError, ValueError):
-            self._raise_failure(
+            raise_ai_provider_failure(
                 request=request,
                 category=AIFailureCategory.UNKNOWN_PROMPT,
-                explanation="The requested AI prompt could not be resolved.",
                 attempt_count=1,
             )
         except Exception:
             # A resolver is an injected boundary; sanitize unexpected failures locally.
-            self._raise_failure(
+            raise_ai_provider_failure(
                 request=request,
                 category=AIFailureCategory.UNKNOWN_PROMPT,
-                explanation="The requested AI prompt could not be resolved.",
                 attempt_count=1,
             )
         if (
@@ -448,10 +389,9 @@ class GeminiAIProvider:
             or not system_prompt.strip()
             or not task_prompt.strip()
         ):
-            self._raise_failure(
+            raise_ai_provider_failure(
                 request=request,
                 category=AIFailureCategory.UNKNOWN_PROMPT,
-                explanation="The requested AI prompt could not be resolved.",
                 attempt_count=1,
             )
         return system_prompt, task_prompt
@@ -474,25 +414,6 @@ class GeminiAIProvider:
             },
         }
         return json.dumps(payload, separators=(",", ":"), sort_keys=True)
-
-    @staticmethod
-    def _extract_response_text(response: GeminiResponseProtocol) -> str | None:
-        text = getattr(response, "text", None)
-        return text if isinstance(text, str) and text else None
-
-    @staticmethod
-    def _validate_response(
-        raw_response: str,
-        output_model: type[BaseModel],
-    ) -> tuple[BaseModel | None, AIFailureCategory | None]:
-        try:
-            response_data = json.loads(raw_response)
-        except json.JSONDecodeError:
-            return None, AIFailureCategory.MALFORMED_JSON
-        try:
-            return output_model.model_validate(response_data), None
-        except ValidationError:
-            return None, AIFailureCategory.SCHEMA_VALIDATION
 
     @staticmethod
     def _classify_api_error(
@@ -524,54 +445,16 @@ class GeminiAIProvider:
         retryable: bool,
         attempt_count: int,
     ) -> None:
-        if retryable and attempt_count < self._max_attempts:
+        if retryable and self._retry_policy.has_next_attempt(attempt_count):
             self._sleep_before_retry(attempt_count)
             return
         final_category = AIFailureCategory.EXHAUSTED_RETRIES if retryable else category
-        self._raise_failure(
+        raise_ai_provider_failure(
             request=request,
             category=final_category,
-            explanation=self._failure_explanation(final_category),
             attempt_count=attempt_count,
         )
 
     def _sleep_before_retry(self, attempt_count: int) -> None:
-        self._sleeper(self._retry_delay_seconds * attempt_count)
-
-    @staticmethod
-    def _failure_explanation(category: AIFailureCategory) -> str:
-        explanations = {
-            AIFailureCategory.AUTHENTICATION: (
-                "The AI provider rejected its credentials."
-            ),
-            AIFailureCategory.UNSUPPORTED_OUTPUT_SCHEMA: (
-                "The AI provider rejected the structured request."
-            ),
-            AIFailureCategory.EXHAUSTED_RETRIES: (
-                "The AI provider failed after the allowed attempts."
-            ),
-        }
-        return explanations.get(category, "The AI provider request failed safely.")
-
-    @staticmethod
-    def _raise_failure(
-        *,
-        request: AIRequest,
-        category: AIFailureCategory,
-        explanation: str,
-        attempt_count: int,
-        raw_response: str | None = None,
-    ) -> Never:
-        audit = FailureAuditData(
-            request_identifier=request.metadata.request_identifier,
-            attempt_count=attempt_count,
-            raw_response=raw_response,
-        )
-        raise AIProviderExecutionError(
-            AIFailureDetails(
-                category=category,
-                request_identifier=request.metadata.request_identifier,
-                explanation=explanation,
-                audit=audit,
-            )
-        ) from None
+        delay = self._retry_policy.delay_before_next_attempt(attempt_count)
+        self._sleeper(delay)

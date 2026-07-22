@@ -351,6 +351,26 @@ def test_other_gemini_client_error_is_not_retried() -> None:
     )
 
 
+def test_unknown_local_output_schema_fails_before_client_call() -> None:
+    client = _FakeClient([_FakeResponse(_valid_summary_response())])
+    provider = _provider(client)
+    request = _summary_request().model_copy(
+        update={"output_schema": "unregistered-output-v1"}
+    )
+
+    with pytest.raises(AIProviderExecutionError) as error_info:
+        provider.generate(request)
+
+    error = error_info.value
+    assert client.recorded_models.calls == []
+    assert error.details.category is AIFailureCategory.UNSUPPORTED_OUTPUT_SCHEMA
+    assert error.details.audit is not None
+    assert error.details.audit.attempt_count == 1
+    assert error.details.audit.raw_response is None
+    assert "unregistered-output-v1" not in str(error)
+    assert "unregistered-output-v1" not in repr(error)
+
+
 def test_gemini_server_error_retries_and_then_succeeds() -> None:
     client = _FakeClient(
         [

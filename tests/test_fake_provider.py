@@ -162,6 +162,27 @@ def test_fake_provider_exposes_safe_simulated_failures(
     assert "audit" not in repr(error)
 
 
+def test_fake_provider_rejects_unknown_output_schema_before_fixture_execution() -> None:
+    provider = FakeAIProvider.from_file(
+        FIXTURE_PATH,
+        "simulated_recoverable_failure",
+    )
+    request = _summary_request().model_copy(
+        update={"output_schema": "unregistered-output-v1"}
+    )
+
+    with pytest.raises(AIProviderExecutionError) as error_info:
+        provider.generate(request)
+
+    error = error_info.value
+    assert error.details.category is AIFailureCategory.UNSUPPORTED_OUTPUT_SCHEMA
+    assert error.details.audit is not None
+    assert error.details.audit.attempt_count == 1
+    assert error.details.audit.raw_response is None
+    assert "unregistered-output-v1" not in str(error)
+    assert "unregistered-output-v1" not in repr(error)
+
+
 def test_fake_provider_requires_no_gemini_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
