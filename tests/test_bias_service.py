@@ -36,6 +36,33 @@ def test_identify_risks_requires_all_five_core_warning_categories() -> None:
     assert all("could" in risk.potential_effect.casefold() for risk in risks)
 
 
+@pytest.mark.parametrize(
+    "required_risk_name",
+    (
+        "confirmation bias",
+        "anchoring bias",
+        "automation bias",
+        "post hoc fallacy",
+        "overconfidence bias",
+    ),
+)
+def test_each_required_reasoning_risk_has_actionable_mitigation(
+    required_risk_name: str,
+) -> None:
+    risks_by_name = {
+        " ".join(risk.name.casefold().split()): risk
+        for risk in BiasService.identify_risks(_valid_bias_output())
+    }
+
+    risk = risks_by_name[required_risk_name]
+
+    assert risk.location
+    assert risk.trigger
+    assert risk.potential_effect
+    assert risk.mitigation
+    assert 0 <= risk.confidence <= 100
+
+
 def test_identify_risks_rejects_missing_required_warning_safely() -> None:
     output = _valid_bias_output()
     incomplete_output = output.model_copy(update={"risks": output.risks[:-1]})

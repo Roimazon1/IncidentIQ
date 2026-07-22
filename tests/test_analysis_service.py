@@ -1056,6 +1056,11 @@ def test_core_analysis_lowers_confidence_for_valid_contradicting_evidence(
             ["E-001"],
             id="out-of-range-line-reference",
         ),
+        pytest.param(
+            {"excerpt": "fabricated checkout success"},
+            ["E-001"],
+            id="fabricated-excerpt",
+        ),
     ],
 )
 def test_core_analysis_flags_invalid_fact_reference_without_failing_run(
