@@ -45,6 +45,7 @@ CORE_FIXTURES = (
     "valid_hypotheses",
     "valid_critic",
     "valid_bias",
+    "valid_open_questions",
 )
 
 
@@ -244,6 +245,19 @@ def test_fake_analysis_can_be_run_and_reopened_without_exposing_raw_audit(
     assert "Post hoc fallacy" in detail_response.text
     assert "Overconfidence bias" in detail_response.text
     assert "Actively seek evidence that would weaken" in detail_response.text
+    assert "Open questions and evidence needed" in detail_response.text
+    assert "unresolved investigation questions, not confirmed facts or causes" in (
+        detail_response.text
+    )
+    assert "Did database pool saturation coincide with checkout failures?" in (
+        detail_response.text
+    )
+    assert "Database pool utilization metrics for the failure window" in (
+        detail_response.text
+    )
+    assert "Missing Evidence: Database pool utilization during the failure window" in (
+        detail_response.text
+    )
     assert "fake / fixture-v1" in detail_response.text
     assert "summary v1" in detail_response.text
     assert "E-001" in detail_response.text

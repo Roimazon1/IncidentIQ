@@ -15,6 +15,7 @@ from app.models.enums import EvidenceType
 from app.schemas.ai_outputs import (
     CriticOutputV1,
     HypothesesOutputV1,
+    OpenQuestionsOutputV1,
     ReasoningRisksOutputV1,
     SummaryOutputV1,
     TimelineOutputV1,
@@ -25,6 +26,7 @@ from app.schemas.ai_provider import (
     AnalysisStage,
     BiasContextV1,
     CriticContextV1,
+    OpenQuestionsContextV1,
     OutputSchemaIdentifier,
     PromptBundle,
     PromptName,
@@ -58,6 +60,7 @@ SYSTEM_PROMPT = "Use only the supplied redacted evidence."
 TASK_PROMPT = "Produce a neutral summary with cited facts and explicit uncertainty."
 CRITIC_PROMPT = "Challenge the supplied validated initial analysis."
 BIAS_PROMPT = "Assess possible reasoning risks in the validated analysis."
+OPEN_QUESTIONS_PROMPT = "Identify actionable unresolved investigation questions."
 
 
 @pytest.fixture(autouse=True)
@@ -153,6 +156,8 @@ def _resolve_prompt(reference: PromptReference) -> str:
         return CRITIC_PROMPT
     if reference.name is PromptName.BIAS:
         return BIAS_PROMPT
+    if reference.name is PromptName.OPEN_QUESTIONS:
+        return OPEN_QUESTIONS_PROMPT
     raise LookupError(reference.name)
 
 
@@ -164,6 +169,7 @@ def _validate_prompt_bundle(
         AnalysisStage.SUMMARY: PromptName.SUMMARY,
         AnalysisStage.CRITIC: PromptName.CRITIC,
         AnalysisStage.BIAS: PromptName.BIAS,
+        AnalysisStage.OPEN_QUESTIONS: PromptName.OPEN_QUESTIONS,
     }.get(analysis_stage)
     if (
         bundle.system.name is not PromptName.SYSTEM
@@ -285,6 +291,35 @@ def _bias_request() -> AIRequest:
             ),
             critic=CriticOutputV1.model_validate_json(
                 fixture_bank["valid_critic"]["raw_response"]
+            ),
+        ),
+    )
+
+
+def _open_questions_request() -> AIRequest:
+    fixture_bank = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+    bias_request = _bias_request()
+    assert bias_request.bias_context is not None
+    return AIRequest(
+        evidence_manifest=bias_request.evidence_manifest,
+        prompts=PromptBundle(
+            system=bias_request.prompts.system,
+            task=PromptReference(
+                name=PromptName.OPEN_QUESTIONS,
+                version=PromptVersion.V1,
+            ),
+        ),
+        output_schema=OutputSchemaIdentifier.OPEN_QUESTIONS_V1,
+        metadata=SafeAIMetadata(
+            request_identifier="req-open-questions",
+            incident_public_identifier="INC-000001",
+            analysis_stage=AnalysisStage.OPEN_QUESTIONS,
+            evidence_manifest_checksum="a" * 64,
+        ),
+        open_questions_context=OpenQuestionsContextV1(
+            analysis_context=bias_request.bias_context,
+            reasoning_risks=ReasoningRisksOutputV1.model_validate_json(
+                fixture_bank["valid_bias"]["raw_response"]
             ),
         ),
     )
@@ -418,6 +453,33 @@ def test_bias_payload_contains_validated_analysis_and_critic_without_audit() -> 
     assert "bias_context" not in payload["evidence_manifest"]
     assert "raw_response" not in client.recorded_models.calls[0]["contents"]
     assert "audit" not in client.recorded_models.calls[0]["contents"]
+
+
+def test_open_questions_payload_reuses_validated_reasoning_context() -> None:
+    client = _FakeClient([_FakeResponse(_fixture_response("valid_open_questions"))])
+    provider = _provider(client)
+
+    result = provider.generate(_open_questions_request())
+
+    assert isinstance(result.output, OpenQuestionsOutputV1)
+    payload_text = client.recorded_models.calls[0]["contents"]
+    payload = json.loads(payload_text)
+    assert payload["task_prompt"] == OPEN_QUESTIONS_PROMPT
+    context = payload["open_questions_context"]
+    assert (
+        context["analysis_context"]["validated_analysis"]["hypotheses"][0][
+            "hypothesis_id"
+        ]
+        == "H-001"
+    )
+    assert (
+        context["analysis_context"]["critic"]["findings"][0]["affected_claim"]
+        == "Database connection pool exhaustion"
+    )
+    assert context["reasoning_risks"]["risks"][0]["name"] == "Confirmation bias"
+    assert "raw_response" not in payload_text
+    assert "audit" not in payload_text
+    assert "GEMINI_API_KEY" not in payload_text
 
 
 def test_schema_sent_to_gemini_uses_only_supported_keywords() -> None:

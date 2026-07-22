@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 
+import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload, sessionmaker
 
@@ -19,6 +20,7 @@ from app.schemas.ai_outputs import (
     AIOutput,
     CriticOutputV1,
     HypothesesOutputV1,
+    OpenQuestionsOutputV1,
     ReasoningRisksOutputV1,
     SummaryOutputV1,
     TimelineOutputV1,
@@ -31,6 +33,10 @@ from app.schemas.ai_provider import (
     SuccessAuditData,
 )
 from app.services.analysis_service import AnalysisService
+from app.services.analysis_stage_runner import (
+    AnalysisStageOutputError,
+    AnalysisStageRunner,
+)
 from app.services.prompt_registry import PromptRegistry
 from app.services.providers.fake_provider import FakeAIProvider
 
@@ -42,6 +48,7 @@ CORE_FIXTURES = (
     "valid_hypotheses",
     "valid_critic",
     "valid_bias",
+    "valid_open_questions",
 )
 
 
@@ -229,6 +236,13 @@ def test_critic_challenges_top_hypothesis_without_mutating_original_results(
             "version": "v1",
         }
         assert bias_record["metadata"]["output_schema"] == "reasoning_risks_v1"
+        open_questions_record = audit_envelope["stages"][
+            AnalysisStage.OPEN_QUESTIONS.value
+        ]
+        assert len(open_questions_record["parsed_output"]["questions"]) == 3
+        assert open_questions_record["metadata"]["output_schema"] == (
+            "open_questions_v1"
+        )
 
     assert [request.metadata.analysis_stage for request in provider.requests] == [
         AnalysisStage.SUMMARY,
@@ -236,6 +250,7 @@ def test_critic_challenges_top_hypothesis_without_mutating_original_results(
         AnalysisStage.HYPOTHESES,
         AnalysisStage.CRITIC,
         AnalysisStage.BIAS,
+        AnalysisStage.OPEN_QUESTIONS,
     ]
     manifests = [request.evidence_manifest for request in provider.requests]
     assert all(manifest is manifests[0] for manifest in manifests)
@@ -259,6 +274,16 @@ def test_critic_challenges_top_hypothesis_without_mutating_original_results(
     )
     assert bias_request.bias_context.critic.findings[0].affected_claim == (
         "Database connection pool exhaustion"
+    )
+    open_questions_request = provider.requests[5]
+    assert open_questions_request.open_questions_context is not None
+    assert (
+        open_questions_request.open_questions_context.analysis_context
+        == bias_request.bias_context
+    )
+    assert (
+        open_questions_request.open_questions_context.reasoning_risks.risks[0].name
+        == "Confirmation bias"
     )
     assert '"raw_response"' not in critic_request.model_dump_json()
     assert '"audit"' not in critic_request.model_dump_json()
@@ -445,3 +470,34 @@ def test_bias_receives_the_same_deterministic_view_used_for_persistence(
     assert secret not in serialized_request
     assert "raw_response" not in serialized_request
     assert "audit" not in serialized_request
+
+    open_questions_request = next(
+        request
+        for request in provider.requests
+        if request.metadata.analysis_stage is AnalysisStage.OPEN_QUESTIONS
+    )
+    open_context = open_questions_request.open_questions_context
+    assert open_context is not None
+    assert open_context.analysis_context == context
+    assert open_context.reasoning_risks.risks[0].name == "Confirmation bias"
+    serialized_open_request = open_questions_request.model_dump_json()
+    assert secret not in serialized_open_request
+    assert "raw_response" not in serialized_open_request
+    assert "audit" not in serialized_open_request
+
+    fixture_bank = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+    invalid_output_data = json.loads(
+        fixture_bank["valid_open_questions"]["raw_response"]
+    )
+    invalid_output_data["questions"][0]["source_reference"] = "Invented unresolved item"
+    with pytest.raises(
+        AnalysisStageOutputError,
+        match="untraceable analysis source",
+    ) as error_info:
+        AnalysisStageRunner.require_traceable_open_questions(
+            OpenQuestionsOutputV1.model_validate(invalid_output_data),
+            open_context,
+            raw_response="internal-sensitive-response",
+        )
+    assert "internal-sensitive-response" not in str(error_info.value)
+    assert error_info.value.audit_raw_response == "internal-sensitive-response"

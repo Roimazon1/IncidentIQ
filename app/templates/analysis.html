@@ -326,6 +326,41 @@
     </div>
   </section>
 
+  <section class="card border-info shadow-sm mb-4" aria-labelledby="open-questions-heading">
+    <div class="card-body p-4">
+      <h2 class="h4" id="open-questions-heading">Open questions and evidence needed</h2>
+      <p class="text-body-secondary">
+        These are unresolved investigation questions, not confirmed facts or causes.
+      </p>
+      {% if page.open_questions_output %}
+        <div class="vstack gap-3">
+          {% for item in page.open_questions_output.questions %}
+            <article class="border rounded p-3">
+              <h3 class="h5">{{ item.question }}</h3>
+              <p>{{ item.rationale }}</p>
+              <dl class="mb-0">
+                <dt>Traces to</dt>
+                <dd>{{ item.source_kind.value | replace("_", " ") | title }}: {{ item.source_reference }}</dd>
+                <dt>Evidence needed</dt>
+                <dd>
+                  <ul class="mb-0">
+                    {% for evidence_item in item.evidence_needed %}
+                      <li>{{ evidence_item }}</li>
+                    {% endfor %}
+                  </ul>
+                </dd>
+                <dt>Resolution criteria</dt>
+                <dd class="mb-0">{{ item.resolution_criteria }}</dd>
+              </dl>
+            </article>
+          {% endfor %}
+        </div>
+      {% else %}
+        <p class="mb-0">No open questions were retained.</p>
+      {% endif %}
+    </div>
+  </section>
+
   <section class="card border-0 shadow-sm" aria-labelledby="audit-heading">
     <div class="card-body p-4">
       <h2 class="h4" id="audit-heading">Analysis traceability</h2>

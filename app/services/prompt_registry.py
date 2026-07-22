@@ -128,6 +128,13 @@ _REGISTRATION_DEFINITIONS = (
         PromptRole.TASK,
     ),
     _RegistrationDefinition(
+        PromptName.OPEN_QUESTIONS,
+        PromptVersion.V1,
+        "open_questions_v1.txt",
+        AnalysisStage.OPEN_QUESTIONS,
+        PromptRole.TASK,
+    ),
+    _RegistrationDefinition(
         PromptName.POSTMORTEM,
         PromptVersion.V1,
         "postmortem_v1.txt",

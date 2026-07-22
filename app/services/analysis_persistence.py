@@ -20,6 +20,7 @@ from app.models import (
 )
 from app.schemas.ai_outputs import (
     CriticOutputV1,
+    OpenQuestionsOutputV1,
     ReasoningRisksOutputV1,
     SummaryOutputV1,
     TimelineOutputV1,
@@ -255,6 +256,17 @@ class AnalysisResultPersistence:
         )
 
     @staticmethod
+    def extract_open_questions_output(
+        raw_response: str | None,
+    ) -> OpenQuestionsOutputV1 | None:
+        """Read actionable open questions from the internal audit envelope."""
+        return AnalysisResultPersistence._extract_stage_output(
+            raw_response,
+            analysis_stage=AnalysisStage.OPEN_QUESTIONS,
+            output_type=OpenQuestionsOutputV1,
+        )
+
+    @staticmethod
     def _extract_stage_output(
         raw_response: str | None,
         *,
@@ -281,6 +293,7 @@ class AnalysisResultPersistence:
             AnalysisStage.SUMMARY.value,
             AnalysisStage.TIMELINE.value,
             AnalysisStage.HYPOTHESES.value,
+            AnalysisStage.OPEN_QUESTIONS.value,
         }
         required_prompts = {
             PromptName.BIAS.value,
@@ -289,6 +302,7 @@ class AnalysisResultPersistence:
             PromptName.SUMMARY.value,
             PromptName.TIMELINE.value,
             PromptName.HYPOTHESES.value,
+            PromptName.OPEN_QUESTIONS.value,
         }
         try:
             audit_envelope = json.loads(analysis_run.raw_response or "")

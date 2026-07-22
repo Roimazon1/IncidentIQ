@@ -22,6 +22,7 @@ _CORE_FAKE_FIXTURES = (
     "valid_hypotheses",
     "valid_critic",
     "valid_bias",
+    "valid_open_questions",
 )
 
 

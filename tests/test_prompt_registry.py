@@ -38,6 +38,11 @@ EXPECTED_PROMPTS = {
     ),
     PromptName.CRITIC: ("critic_v1.txt", AnalysisStage.CRITIC, PromptRole.TASK),
     PromptName.BIAS: ("bias_v1.txt", AnalysisStage.BIAS, PromptRole.TASK),
+    PromptName.OPEN_QUESTIONS: (
+        "open_questions_v1.txt",
+        AnalysisStage.OPEN_QUESTIONS,
+        PromptRole.TASK,
+    ),
     PromptName.POSTMORTEM: (
         "postmortem_v1.txt",
         AnalysisStage.POSTMORTEM,
@@ -237,6 +242,12 @@ def test_stage_prompts_use_their_declared_uncertainty_fields() -> None:
     bias = registry.resolve_content(
         PromptReference(name=PromptName.BIAS, version=PromptVersion.V1)
     ).lower()
+    open_questions = registry.resolve_content(
+        PromptReference(
+            name=PromptName.OPEN_QUESTIONS,
+            version=PromptVersion.V1,
+        )
+    ).lower()
 
     assert "summary.uncertainty" in summary
     assert "unknowns" in summary
@@ -268,6 +279,13 @@ def test_stage_prompts_use_their_declared_uncertainty_fields() -> None:
         )
     )
     assert "possible warning, not an accusation" in bias
+    assert "evidence_needed" in open_questions
+    assert "source_kind" in open_questions
+    assert "source_reference" in open_questions
+    assert "not a confirmed fact" in open_questions
+    assert "confirmed root cause" in open_questions
+    assert "hypothesis_id|evidence_id|line_range" in open_questions
+    assert "never use only the hypothesis id" in open_questions
 
 
 def test_application_code_does_not_load_prompt_files_outside_registry() -> None:
@@ -278,6 +296,7 @@ def test_application_code_does_not_load_prompt_files_outside_registry() -> None:
         "hypotheses_v1.txt",
         "critic_v1.txt",
         "bias_v1.txt",
+        "open_questions_v1.txt",
         "postmortem_v1.txt",
         "app/prompts",
     )

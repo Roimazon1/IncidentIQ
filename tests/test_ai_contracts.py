@@ -19,6 +19,9 @@ from app.schemas.ai_outputs import (
     HypothesesOutputV1,
     HypothesisV1,
     HypothesisValidationTestV1,
+    OpenQuestionSourceKind,
+    OpenQuestionsOutputV1,
+    OpenQuestionV1,
     ReasoningRiskV1,
     RecommendedActionV1,
     SummaryAndImpactV1,
@@ -453,6 +456,7 @@ def test_provider_call_output_schema_identifiers_are_stage_only() -> None:
         "hypotheses_v1",
         "critic_v1",
         "reasoning_risks_v1",
+        "open_questions_v1",
     }
 
 
@@ -632,7 +636,16 @@ def test_complete_analysis_composes_smaller_typed_outputs() -> None:
                 operational_risk="Read-only comparison has low risk.",
             ),
         ),
-        open_questions=("What changed in the deployment?",),
+        open_questions=(
+            OpenQuestionV1(
+                question="What changed in the deployment?",
+                source_kind=OpenQuestionSourceKind.ASSUMPTION,
+                source_reference="A deployment may be related.",
+                rationale="The deployment relationship remains unverified.",
+                evidence_needed=("Deployment history",),
+                resolution_criteria="The history confirms or rules out a change.",
+            ),
+        ),
         reasoning_risks=(
             ReasoningRiskV1(
                 name="Anchoring bias",
@@ -651,6 +664,10 @@ def test_complete_analysis_composes_smaller_typed_outputs() -> None:
         complete.hypotheses[0].validation_test, HypothesisValidationTestV1
     )
     assert isinstance(complete.critic, CriticOutputV1)
+    assert isinstance(
+        OpenQuestionsOutputV1(questions=complete.open_questions),
+        OpenQuestionsOutputV1,
+    )
     assert isinstance(ActionsOutputV1(actions=complete.actions), ActionsOutputV1)
 
 

@@ -32,6 +32,7 @@ from app.schemas.ai_outputs import (
     CriticOutputV1,
     EvidenceReferenceV1,
     HypothesesOutputV1,
+    OpenQuestionsOutputV1,
     SummaryOutputV1,
     TimelineOutputV1,
 )
@@ -156,6 +157,9 @@ def _recording_core_provider(
         OutputSchemaIdentifier.HYPOTHESES_V1: _fixture_provider("valid_hypotheses"),
         OutputSchemaIdentifier.CRITIC_V1: _fixture_provider("valid_critic"),
         OutputSchemaIdentifier.REASONING_RISKS_V1: _fixture_provider("valid_bias"),
+        OutputSchemaIdentifier.OPEN_QUESTIONS_V1: _fixture_provider(
+            "valid_open_questions"
+        ),
     }
 
     def generate(request: AIRequest) -> AIResult[AIOutput]:
@@ -870,6 +874,7 @@ def test_core_analysis_persists_all_validated_outputs_and_audit_data(
             "summary": "v1",
             "timeline": "v1",
             "hypotheses": "v1",
+            "open_questions": "v1",
         }
         assert persisted_run.input_evidence_codes == ["E-001"]
         assert persisted_run.raw_response is not None
@@ -881,6 +886,7 @@ def test_core_analysis_persists_all_validated_outputs_and_audit_data(
             "hypotheses",
             "critic",
             "bias",
+            "open_questions",
         }
 
         fixture_bank = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
@@ -890,6 +896,7 @@ def test_core_analysis_persists_all_validated_outputs_and_audit_data(
             ("hypotheses", "valid_hypotheses"),
             ("critic", "valid_critic"),
             ("bias", "valid_bias"),
+            ("open_questions", "valid_open_questions"),
         ):
             assert (
                 stages[stage_name]["raw_response"]
@@ -901,6 +908,12 @@ def test_core_analysis_persists_all_validated_outputs_and_audit_data(
 
         summary_output = SummaryOutputV1.model_validate(
             stages["summary"]["parsed_output"]
+        )
+        open_questions_output = OpenQuestionsOutputV1.model_validate(
+            stages["open_questions"]["parsed_output"]
+        )
+        assert all(
+            question.evidence_needed for question in open_questions_output.questions
         )
         assert summary_output.assumptions[0].claim == "A deployment may be related."
         assert len(persisted_run.facts) == 1
@@ -939,12 +952,13 @@ def test_core_analysis_persists_all_validated_outputs_and_audit_data(
             "Overconfidence bias",
         }
 
-    assert len(provider.requests) == 5
+    assert len(provider.requests) == 6
     manifests = [request.evidence_manifest for request in provider.requests]
     assert all(manifest is manifests[0] for manifest in manifests)
     assert all(request.critic_context is None for request in provider.requests[:3])
     assert provider.requests[3].critic_context is not None
     assert provider.requests[4].bias_context is not None
+    assert provider.requests[5].open_questions_context is not None
     assert all(secret not in request.model_dump_json() for request in provider.requests)
 
 
@@ -1190,7 +1204,7 @@ def test_core_analysis_rolls_back_structured_rows_before_failed_audit_persistenc
             service.run_core_analysis(run_id)
 
         assert completed_flush_failed is True
-        assert len(provider.requests) == 5
+        assert len(provider.requests) == 6
         assert str(error_info.value) == (
             "The completed analysis results could not be saved."
         )
@@ -1201,6 +1215,7 @@ def test_core_analysis_rolls_back_structured_rows_before_failed_audit_persistenc
             "valid_hypotheses",
             "valid_critic",
             "valid_bias",
+            "valid_open_questions",
         ):
             raw_response = fixture_bank[fixture_name]["raw_response"]
             assert raw_response not in str(error_info.value)
@@ -1234,6 +1249,7 @@ def test_core_analysis_rolls_back_structured_rows_before_failed_audit_persistenc
             "summary": "v1",
             "timeline": "v1",
             "hypotheses": "v1",
+            "open_questions": "v1",
         }
         assert persisted_run.input_evidence_codes == ["E-001"]
         assert persisted_run.raw_response is not None
@@ -1244,6 +1260,7 @@ def test_core_analysis_rolls_back_structured_rows_before_failed_audit_persistenc
             "hypotheses",
             "critic",
             "bias",
+            "open_questions",
         }
         for stage_name, fixture_name in (
             ("summary", "valid_summary"),
@@ -1251,6 +1268,7 @@ def test_core_analysis_rolls_back_structured_rows_before_failed_audit_persistenc
             ("hypotheses", "valid_hypotheses"),
             ("critic", "valid_critic"),
             ("bias", "valid_bias"),
+            ("open_questions", "valid_open_questions"),
         ):
             assert (
                 stages[stage_name]["raw_response"]

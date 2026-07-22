@@ -20,6 +20,7 @@ from app.models import (
 from app.schemas.ai_outputs import (
     CriticOutputV1,
     HypothesesOutputV1,
+    OpenQuestionsOutputV1,
     ReasoningRisksOutputV1,
     SummaryOutputV1,
     TimelineOutputV1,
@@ -29,6 +30,7 @@ from app.schemas.ai_provider import (
     AnalysisStage,
     BiasContextV1,
     CriticContextV1,
+    OpenQuestionsContextV1,
     OutputSchemaIdentifier,
     PromptName,
     PromptVersion,
@@ -60,6 +62,7 @@ class AnalysisPageData:
     summary_output: SummaryOutputV1 | None
     timeline_output: TimelineOutputV1 | None
     critic_output: CriticOutputV1 | None
+    open_questions_output: OpenQuestionsOutputV1 | None
     confirmed_facts: tuple[Fact, ...]
     unconfirmed_claims: tuple[Fact, ...]
 
@@ -269,6 +272,11 @@ class AnalysisService:
 
             current_stage = AnalysisStage.BIAS
             prompt_versions[PromptName.BIAS.value] = PromptVersion.V1.value
+            bias_context = BiasContextV1(
+                original_analysis=initial_analysis_context,
+                validated_analysis=validated_analysis,
+                critic=critic_result.output,
+            )
             bias_result = self._stage_runner.execute_stage(
                 analysis_run,
                 evidence_manifest,
@@ -276,11 +284,7 @@ class AnalysisService:
                 analysis_stage=AnalysisStage.BIAS,
                 output_schema=OutputSchemaIdentifier.REASONING_RISKS_V1,
                 output_type=ReasoningRisksOutputV1,
-                bias_context=BiasContextV1(
-                    original_analysis=initial_analysis_context,
-                    validated_analysis=validated_analysis,
-                    critic=critic_result.output,
-                ),
+                bias_context=bias_context,
             )
             self._stage_runner.require_required_reasoning_risks(
                 bias_result.output,
@@ -288,6 +292,32 @@ class AnalysisService:
             )
             stage_records[AnalysisStage.BIAS.value] = (
                 self._result_persistence.build_success_stage_record(bias_result)
+            )
+
+            current_stage = AnalysisStage.OPEN_QUESTIONS
+            prompt_versions[PromptName.OPEN_QUESTIONS.value] = PromptVersion.V1.value
+            open_questions_context = OpenQuestionsContextV1(
+                analysis_context=bias_context,
+                reasoning_risks=bias_result.output,
+            )
+            open_questions_result = self._stage_runner.execute_stage(
+                analysis_run,
+                evidence_manifest,
+                task_prompt=PromptName.OPEN_QUESTIONS,
+                analysis_stage=AnalysisStage.OPEN_QUESTIONS,
+                output_schema=OutputSchemaIdentifier.OPEN_QUESTIONS_V1,
+                output_type=OpenQuestionsOutputV1,
+                open_questions_context=open_questions_context,
+            )
+            self._stage_runner.require_traceable_open_questions(
+                open_questions_result.output,
+                open_questions_context,
+                raw_response=open_questions_result.audit.raw_response,
+            )
+            stage_records[AnalysisStage.OPEN_QUESTIONS.value] = (
+                self._result_persistence.build_success_stage_record(
+                    open_questions_result
+                )
             )
         except AIProviderExecutionError as exc:
             stage_records[current_stage.value] = (
@@ -396,6 +426,11 @@ class AnalysisService:
             critic_output=self._result_persistence.extract_critic_output(
                 analysis_run.raw_response
             ),
+            open_questions_output=(
+                self._result_persistence.extract_open_questions_output(
+                    analysis_run.raw_response
+                )
+            ),
             confirmed_facts=confirmed_facts,
             unconfirmed_claims=unconfirmed_claims,
         )
@@ -474,6 +509,29 @@ class AnalysisService:
         )
         return result
 
+    def run_open_questions_stage(
+        self,
+        run_id: int,
+        *,
+        open_questions_context: OpenQuestionsContextV1,
+    ) -> AIResult[OpenQuestionsOutputV1]:
+        """Generate actionable questions from unresolved validated analysis items."""
+        result = self._run_stage(
+            run_id,
+            operation="run open-question analysis",
+            task_prompt=PromptName.OPEN_QUESTIONS,
+            analysis_stage=AnalysisStage.OPEN_QUESTIONS,
+            output_schema=OutputSchemaIdentifier.OPEN_QUESTIONS_V1,
+            output_type=OpenQuestionsOutputV1,
+            open_questions_context=open_questions_context,
+        )
+        self._stage_runner.require_traceable_open_questions(
+            result.output,
+            open_questions_context,
+            raw_response=result.audit.raw_response,
+        )
+        return result
+
     def _run_stage(
         self,
         run_id: int,
@@ -485,6 +543,7 @@ class AnalysisService:
         output_type: type[StageOutputT],
         critic_context: CriticContextV1 | None = None,
         bias_context: BiasContextV1 | None = None,
+        open_questions_context: OpenQuestionsContextV1 | None = None,
     ) -> AIResult[StageOutputT]:
         analysis_run = self._get_analysis_run_or_raise(run_id)
         self._require_running(analysis_run, operation=operation)
@@ -498,6 +557,7 @@ class AnalysisService:
             output_type=output_type,
             critic_context=critic_context,
             bias_context=bias_context,
+            open_questions_context=open_questions_context,
         )
 
     def _persist_failed_analysis(

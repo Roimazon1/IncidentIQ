@@ -25,6 +25,7 @@ from app.schemas.ai_outputs import (
     HypothesisValidationTestV1,
     HypothesesOutputV1,
     NonBlankText,
+    ReasoningRisksOutputV1,
     PositiveRank,
     SummaryOutputV1,
     TimelineOutputV1,
@@ -76,6 +77,7 @@ class PromptName(StrEnum):
     HYPOTHESES = "hypotheses"
     CRITIC = "critic"
     BIAS = "bias"
+    OPEN_QUESTIONS = "open_questions"
     POSTMORTEM = "postmortem"
 
 
@@ -94,6 +96,7 @@ class AnalysisStage(StrEnum):
     HYPOTHESES = "hypotheses"
     CRITIC = "critic"
     BIAS = "bias"
+    OPEN_QUESTIONS = "open_questions"
     POSTMORTEM = "postmortem"
 
 
@@ -117,6 +120,7 @@ class OutputSchemaIdentifier(StrEnum):
     HYPOTHESES_V1 = "hypotheses_v1"
     CRITIC_V1 = "critic_v1"
     REASONING_RISKS_V1 = "reasoning_risks_v1"
+    OPEN_QUESTIONS_V1 = "open_questions_v1"
 
 
 class PromptReference(StrictAIContract):
@@ -234,6 +238,13 @@ class BiasContextV1(StrictAIContract):
     critic: CriticOutputV1
 
 
+class OpenQuestionsContextV1(StrictAIContract):
+    """Validated analysis, critic, and bias results for open questions."""
+
+    analysis_context: BiasContextV1
+    reasoning_risks: ReasoningRisksOutputV1
+
+
 class AIRequest(StrictAIContract):
     """Typed, provider-neutral input accepted by an IncidentIQ AI provider."""
 
@@ -243,12 +254,16 @@ class AIRequest(StrictAIContract):
     metadata: SafeAIMetadata
     critic_context: CriticContextV1 | None = None
     bias_context: BiasContextV1 | None = None
+    open_questions_context: OpenQuestionsContextV1 | None = None
 
     @model_validator(mode="after")
     def validate_analysis_context_roles(self) -> AIRequest:
         """Require each typed analysis context only for its owning stage."""
         is_critic_request = self.metadata.analysis_stage is AnalysisStage.CRITIC
         is_bias_request = self.metadata.analysis_stage is AnalysisStage.BIAS
+        is_open_questions_request = (
+            self.metadata.analysis_stage is AnalysisStage.OPEN_QUESTIONS
+        )
         if is_critic_request and self.critic_context is None:
             raise ValueError(
                 "critic requests require validated initial analysis context"
@@ -259,6 +274,14 @@ class AIRequest(StrictAIContract):
             raise ValueError("bias requests require validated analysis context")
         if not is_bias_request and self.bias_context is not None:
             raise ValueError("bias context is only accepted for bias requests")
+        if is_open_questions_request and self.open_questions_context is None:
+            raise ValueError(
+                "open-question requests require validated reasoning context"
+            )
+        if not is_open_questions_request and self.open_questions_context is not None:
+            raise ValueError(
+                "open-question context is only accepted for open-question requests"
+            )
         return self
 
 
