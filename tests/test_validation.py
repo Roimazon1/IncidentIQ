@@ -103,6 +103,33 @@ def test_valid_references_produce_valid_outcomes() -> None:
     )
 
 
+def test_valid_line_only_reference_produces_valid_outcome() -> None:
+    outcome = ValidationService.validate_supporting_excerpt(
+        EvidenceReferenceV1(evidence_id="E-001", line_range="2-3"),
+        _manifest(),
+    )
+
+    assert outcome.is_valid is True
+    assert outcome.status is EvidenceReferenceValidationStatus.VALID
+
+
+@pytest.mark.parametrize("line_range", ["4", "2-4"])
+def test_out_of_range_reference_produces_safe_invalid_outcome(
+    line_range: str,
+) -> None:
+    outcome = ValidationService.validate_supporting_excerpt(
+        EvidenceReferenceV1(evidence_id="E-001", line_range=line_range),
+        _manifest(),
+    )
+
+    assert outcome.is_valid is False
+    assert outcome.status is EvidenceReferenceValidationStatus.INVALID_LINE_RANGE
+    assert outcome.message == "Line range is outside the referenced evidence."
+    assert not hasattr(outcome, "support_status")
+    assert "Checkout failed" not in repr(outcome)
+    assert "local-secret" not in repr(outcome)
+
+
 def test_validate_supporting_excerpt_uses_normalized_redacted_evidence() -> None:
     manifest = _manifest()
 
@@ -171,6 +198,7 @@ def test_mixed_valid_and_invalid_references_are_all_reported() -> None:
             line_range="1",
             excerpt="fabricated failure",
         ),
+        EvidenceReferenceV1(evidence_id="E-001", line_range="4"),
     )
 
     outcomes = tuple(
@@ -182,19 +210,66 @@ def test_mixed_valid_and_invalid_references_are_all_reported() -> None:
         EvidenceReferenceValidationStatus.VALID,
         EvidenceReferenceValidationStatus.UNKNOWN_EVIDENCE_ID,
         EvidenceReferenceValidationStatus.EXCERPT_MISMATCH,
+        EvidenceReferenceValidationStatus.INVALID_LINE_RANGE,
     ]
 
 
-def test_validation_outcomes_do_not_classify_claim_support() -> None:
-    outcome = ValidationService.validate_supporting_excerpt(
+def test_classify_claim_support_consumes_reference_validation_outcomes() -> None:
+    manifest = _manifest()
+    valid = ValidationService.validate_supporting_excerpt(
+        EvidenceReferenceV1(
+            evidence_id="E-001",
+            line_range="1",
+            excerpt="Checkout failed",
+        ),
+        manifest,
+    )
+    unknown = ValidationService.validate_supporting_excerpt(
         EvidenceReferenceV1(evidence_id="E-999", line_range="1"),
-        _manifest(),
+        manifest,
+    )
+    mismatch = ValidationService.validate_supporting_excerpt(
+        EvidenceReferenceV1(
+            evidence_id="E-001",
+            line_range="1",
+            excerpt="fabricated failure",
+        ),
+        manifest,
+    )
+    invalid_line_range = ValidationService.validate_supporting_excerpt(
+        EvidenceReferenceV1(evidence_id="E-001", line_range="4"),
+        manifest,
     )
 
-    assert not hasattr(outcome, "support_status")
-    assert outcome.status.value not in {
-        support_status.value for support_status in ClaimSupportStatus
-    }
+    assert ValidationService.classify_claim_support((valid,)) is (
+        ClaimSupportStatus.SUPPORTED
+    )
+    assert ValidationService.classify_claim_support((valid, unknown)) is (
+        ClaimSupportStatus.PARTIALLY_SUPPORTED
+    )
+    assert (
+        ValidationService.classify_claim_support(
+            (valid,),
+            is_inferred=True,
+        )
+        is ClaimSupportStatus.INFERRED
+    )
+    assert (
+        ValidationService.classify_claim_support(
+            (valid,),
+            has_valid_contradicting_evidence=True,
+        )
+        is ClaimSupportStatus.CONTRADICTED
+    )
+    assert (
+        ValidationService.classify_claim_support(
+            (unknown, mismatch, invalid_line_range)
+        )
+        is ClaimSupportStatus.UNSUPPORTED
+    )
+    assert ValidationService.classify_claim_support(()) is (
+        ClaimSupportStatus.UNSUPPORTED
+    )
 
 
 @pytest.mark.parametrize(

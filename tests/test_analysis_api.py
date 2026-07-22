@@ -11,15 +11,52 @@ from app.config import Settings
 from app.models import (
     AnalysisRun,
     AnalysisRunStatus,
+    ClaimSupportStatus,
+    Fact,
     IncidentStatus,
 )
 from app.routers import analysis as analysis_router
+from app.schemas.ai_outputs import AIOutput, SummaryOutputV1
+from app.schemas.ai_provider import AIRequest, AIResult, AnalysisStage
 from app.services.analysis_service import AnalysisService
 from app.services.prompt_registry import PromptRegistry
 from app.services.providers.fake_provider import FakeAIProvider
 
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "fake_ai_responses.json"
+CORE_FIXTURES = (
+    "valid_summary",
+    "valid_timeline",
+    "valid_hypotheses",
+    "valid_critic",
+)
+
+
+class _OutOfRangeSummaryProvider:
+    def __init__(self, delegate: FakeAIProvider) -> None:
+        self._delegate = delegate
+
+    def generate(self, request: AIRequest) -> AIResult[AIOutput]:
+        result = self._delegate.generate(request)
+        if request.metadata.analysis_stage is not AnalysisStage.SUMMARY:
+            return result
+        output = result.output
+        assert isinstance(output, SummaryOutputV1)
+        fact = output.facts[0]
+        invalid_reference = fact.evidence[0].model_copy(update={"line_range": "999"})
+        return AIResult[AIOutput](
+            output=output.model_copy(
+                update={
+                    "facts": (
+                        fact.model_copy(
+                            update={"evidence": (invalid_reference,)},
+                        ),
+                    )
+                }
+            ),
+            metadata=result.metadata,
+            audit=result.audit,
+        )
 
 
 @pytest.fixture(autouse=True)
@@ -87,7 +124,11 @@ def test_fake_analysis_can_be_run_and_reopened_without_exposing_raw_audit(
     assert detail_response.status_code == 200
     assert "COMPLETED" in detail_response.text
     assert "Checkout requests are failing." in detail_response.text
-    assert "Unvalidated AI claims" in detail_response.text
+    assert "Confirmed facts" in detail_response.text
+    assert "The redacted checkout log contains a failure." in detail_response.text
+    assert "SUPPORTED" in detail_response.text
+    assert "Unconfirmed AI claims" in detail_response.text
+    assert "No unconfirmed claims were retained." in detail_response.text
     assert "A deployment may be related." in detail_response.text
     assert "Timeline" in detail_response.text
     assert "Direct" in detail_response.text
@@ -125,6 +166,7 @@ def test_fake_analysis_can_be_run_and_reopened_without_exposing_raw_audit(
         assert persisted_run.status is AnalysisRunStatus.COMPLETED
         assert persisted_run.incident.status is IncidentStatus.COMPLETED
         assert len(persisted_run.facts) == 1
+        assert persisted_run.facts[0].support_status is ClaimSupportStatus.SUPPORTED
         assert len(persisted_run.timeline_events) == 2
         assert len(persisted_run.hypotheses) == 3
         assert [
@@ -135,6 +177,64 @@ def test_fake_analysis_can_be_run_and_reopened_without_exposing_raw_audit(
             (2, "Recent deployment regression", 45),
             (3, "External payment dependency failure", 35),
         ]
+
+
+def test_out_of_range_fact_is_separate_from_confirmed_facts(
+    database_client: TestClient,
+    database_session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = PromptRegistry()
+    provider = _OutOfRangeSummaryProvider(
+        FakeAIProvider.from_file_set(
+            FIXTURE_PATH,
+            CORE_FIXTURES,
+            prompt_resolver=registry.resolve_content,
+            prompt_bundle_validator=registry.validate_bundle,
+        )
+    )
+
+    def build_out_of_range_analysis_service(
+        session: Session,
+        settings: Settings,
+    ) -> AnalysisService:
+        del settings
+        return AnalysisService(
+            session,
+            ai_provider=provider,
+            configured_provider_name="fake",
+            configured_model_name="fixture-v1",
+        )
+
+    monkeypatch.setattr(
+        analysis_router,
+        "build_configured_analysis_service",
+        build_out_of_range_analysis_service,
+    )
+    public_id = _create_ready_incident(database_client)
+    start_response = database_client.post(
+        f"/incidents/{public_id}/analysis",
+        follow_redirects=False,
+    )
+
+    with database_session_factory() as session:
+        fact = session.scalar(select(Fact))
+        assert fact is not None
+        assert fact.support_status is ClaimSupportStatus.UNSUPPORTED
+        assert fact.supporting_excerpt is None
+
+    detail_response = database_client.get(start_response.headers["location"])
+    claim = "The redacted checkout log contains a failure."
+
+    assert detail_response.status_code == 200
+    assert "Confirmed facts" in detail_response.text
+    assert "No AI claims have validated support." in detail_response.text
+    assert "Unconfirmed AI claims" in detail_response.text
+    assert "UNSUPPORTED" in detail_response.text
+    assert detail_response.text.count(claim) == 1
+    assert detail_response.text.index(claim) > detail_response.text.index(
+        "Unconfirmed AI claims"
+    )
 
 
 def test_running_analysis_renders_pending_page(

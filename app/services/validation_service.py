@@ -7,6 +7,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel
 
+from app.models import ClaimSupportStatus
 from app.schemas.ai_outputs import EvidenceReferenceV1
 from app.schemas.evidence import (
     EvidenceCode,
@@ -25,6 +26,7 @@ class EvidenceReferenceValidationStatus(StrEnum):
 
     VALID = "valid"
     UNKNOWN_EVIDENCE_ID = "unknown_evidence_id"
+    INVALID_LINE_RANGE = "invalid_line_range"
     EXCERPT_MISMATCH = "excerpt_mismatch"
 
 
@@ -64,19 +66,19 @@ class ValidationService:
         references: Iterable[EvidenceReferenceV1],
         evidence_manifest: EvidenceManifest,
     ) -> tuple[EvidenceReferenceValidationOutcome, ...]:
-        """Return an identifier outcome for every supplied reference."""
-        valid_ids = {item.id for item in evidence_manifest.evidence}
-        return tuple(
-            cls._outcome(
+        """Return an identifier and line-range outcome for every reference."""
+        outcomes: list[EvidenceReferenceValidationOutcome] = []
+        for reference in references:
+            _, invalid_outcome = cls._validate_reference_location(
                 reference,
-                (
-                    EvidenceReferenceValidationStatus.VALID
-                    if reference.evidence_id in valid_ids
-                    else EvidenceReferenceValidationStatus.UNKNOWN_EVIDENCE_ID
-                ),
+                evidence_manifest,
             )
-            for reference in references
-        )
+            outcomes.append(
+                invalid_outcome
+                if invalid_outcome is not None
+                else cls._outcome(reference, EvidenceReferenceValidationStatus.VALID)
+            )
+        return tuple(outcomes)
 
     @classmethod
     def validate_supporting_excerpt(
@@ -86,19 +88,13 @@ class ValidationService:
     ) -> EvidenceReferenceValidationOutcome:
         """Return an exact normalized-redacted excerpt validation outcome."""
 
-        evidence_item = next(
-            (
-                item
-                for item in evidence_manifest.evidence
-                if item.id == reference.evidence_id
-            ),
-            None,
+        evidence_item, invalid_outcome = cls._validate_reference_location(
+            reference,
+            evidence_manifest,
         )
-        if evidence_item is None:
-            return cls._outcome(
-                reference,
-                EvidenceReferenceValidationStatus.UNKNOWN_EVIDENCE_ID,
-            )
+        if invalid_outcome is not None:
+            return invalid_outcome
+        assert evidence_item is not None
         if reference.excerpt is None:
             return cls._outcome(
                 reference,
@@ -118,6 +114,26 @@ class ValidationService:
         return cls._outcome(reference, EvidenceReferenceValidationStatus.VALID)
 
     @staticmethod
+    def classify_claim_support(
+        outcomes: Iterable[EvidenceReferenceValidationOutcome],
+        *,
+        is_inferred: bool = False,
+        has_valid_contradicting_evidence: bool = False,
+    ) -> ClaimSupportStatus:
+        """Classify a claim from deterministic reference-validation outcomes."""
+        outcome_set = tuple(outcomes)
+        valid_count = sum(outcome.is_valid for outcome in outcome_set)
+        if valid_count == 0:
+            return ClaimSupportStatus.UNSUPPORTED
+        if has_valid_contradicting_evidence:
+            return ClaimSupportStatus.CONTRADICTED
+        if is_inferred:
+            return ClaimSupportStatus.INFERRED
+        if valid_count < len(outcome_set):
+            return ClaimSupportStatus.PARTIALLY_SUPPORTED
+        return ClaimSupportStatus.SUPPORTED
+
+    @staticmethod
     def _outcome(
         reference: EvidenceReferenceV1,
         status: EvidenceReferenceValidationStatus,
@@ -129,6 +145,9 @@ class ValidationService:
             EvidenceReferenceValidationStatus.UNKNOWN_EVIDENCE_ID: (
                 "Evidence identifier is not present in the analysis manifest."
             ),
+            EvidenceReferenceValidationStatus.INVALID_LINE_RANGE: (
+                "Line range is outside the referenced evidence."
+            ),
             EvidenceReferenceValidationStatus.EXCERPT_MISMATCH: (
                 "Excerpt does not match the referenced normalized redacted evidence."
             ),
@@ -139,6 +158,56 @@ class ValidationService:
             status=status,
             message=messages[status],
         )
+
+    @classmethod
+    def _validate_reference_location(
+        cls,
+        reference: EvidenceReferenceV1,
+        evidence_manifest: EvidenceManifest,
+    ) -> tuple[
+        EvidenceManifestItem | None,
+        EvidenceReferenceValidationOutcome | None,
+    ]:
+        evidence_item = next(
+            (
+                item
+                for item in evidence_manifest.evidence
+                if item.id == reference.evidence_id
+            ),
+            None,
+        )
+        if evidence_item is None:
+            return None, cls._outcome(
+                reference,
+                EvidenceReferenceValidationStatus.UNKNOWN_EVIDENCE_ID,
+            )
+        if not cls._line_range_exists(evidence_item, reference.line_range):
+            return evidence_item, cls._outcome(
+                reference,
+                EvidenceReferenceValidationStatus.INVALID_LINE_RANGE,
+            )
+        return evidence_item, None
+
+    @staticmethod
+    def _line_range_exists(
+        evidence_item: EvidenceManifestItem,
+        line_range: str,
+    ) -> bool:
+        start_text, separator, end_text = line_range.partition("-")
+        start_line = int(start_text)
+        end_line = int(end_text) if separator else start_line
+        existing_line_numbers = {
+            int(match.group("number"))
+            for chunk in evidence_item.chunks
+            for numbered_line in chunk.content.splitlines()
+            if (match := _NUMBERED_LINE_PATTERN.fullmatch(numbered_line)) is not None
+        }
+        requested_line_count = end_line - start_line + 1
+        matching_line_count = sum(
+            start_line <= line_number <= end_line
+            for line_number in existing_line_numbers
+        )
+        return matching_line_count == requested_line_count
 
     @classmethod
     def _iter_evidence_references(

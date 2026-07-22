@@ -498,8 +498,12 @@ def test_summary_stage_extracts_typed_facts_and_assumptions_from_redacted_input(
             {"excerpt": "fabricated database outage"},
             EvidenceReferenceValidationStatus.EXCERPT_MISMATCH,
         ),
+        (
+            {"line_range": "999"},
+            EvidenceReferenceValidationStatus.INVALID_LINE_RANGE,
+        ),
     ],
-    ids=["unknown-evidence-id", "fabricated-excerpt"],
+    ids=["unknown-evidence-id", "fabricated-excerpt", "out-of-range-line"],
 )
 def test_summary_stage_reports_invalid_traceability_without_terminating_run(
     service_session: Session,
@@ -526,7 +530,10 @@ def test_summary_stage_reports_invalid_traceability_without_terminating_run(
             audit=SuccessAuditData(raw_response=raw_audit_marker),
         )
 
-    incident = _persist_incident(service_session)
+    incident = _persist_incident(
+        service_session,
+        original_text="checkout failed\nretry=false",
+    )
     provider = _RecordingProvider(generate_invalid_reference)
     service = AnalysisService(service_session, ai_provider=provider)
     analysis_run = _start_run(service, incident.public_id)
@@ -885,7 +892,7 @@ def test_core_analysis_persists_all_validated_outputs_and_audit_data(
         )
         assert summary_output.assumptions[0].claim == "A deployment may be related."
         assert len(persisted_run.facts) == 1
-        assert persisted_run.facts[0].support_status is ClaimSupportStatus.UNSUPPORTED
+        assert persisted_run.facts[0].support_status is ClaimSupportStatus.SUPPORTED
         assert persisted_run.facts[0].evidence_codes == ["E-001"]
         assert len(persisted_run.timeline_events) == 2
         direct_event = next(
@@ -915,6 +922,74 @@ def test_core_analysis_persists_all_validated_outputs_and_audit_data(
     assert all(request.critic_context is None for request in provider.requests[:3])
     assert provider.requests[3].critic_context is not None
     assert all(secret not in request.model_dump_json() for request in provider.requests)
+
+
+@pytest.mark.parametrize(
+    ("reference_update", "expected_evidence_codes"),
+    [
+        pytest.param(
+            {"evidence_id": "E-999"},
+            ["E-999"],
+            id="unknown-evidence-id",
+        ),
+        pytest.param(
+            {"line_range": "999"},
+            ["E-001"],
+            id="out-of-range-line-reference",
+        ),
+    ],
+)
+def test_core_analysis_flags_invalid_fact_reference_without_failing_run(
+    database_session_factory: sessionmaker[Session],
+    reference_update: dict[str, str],
+    expected_evidence_codes: list[str],
+) -> None:
+    fixture_provider = _recording_core_provider()
+
+    def generate_invalid_summary_reference(request: AIRequest) -> AIResult[AIOutput]:
+        result = fixture_provider.generate(request)
+        if request.metadata.analysis_stage is not AnalysisStage.SUMMARY:
+            return result
+        output = result.output
+        assert isinstance(output, SummaryOutputV1)
+        fact = output.facts[0]
+        invalid_reference = fact.evidence[0].model_copy(update=reference_update)
+        return AIResult[AIOutput](
+            output=output.model_copy(
+                update={
+                    "facts": (
+                        fact.model_copy(
+                            update={"evidence": (invalid_reference,)},
+                        ),
+                    )
+                }
+            ),
+            metadata=result.metadata,
+            audit=result.audit,
+        )
+
+    provider = _RecordingProvider(generate_invalid_summary_reference)
+    with database_session_factory() as session:
+        incident = _persist_incident(session)
+        service = AnalysisService(session, ai_provider=provider)
+        analysis_run = _start_run(service, incident.public_id)
+
+        completed_run = service.run_core_analysis(analysis_run.id)
+        run_id = completed_run.id
+
+    with database_session_factory() as session:
+        persisted_run = session.scalar(
+            select(AnalysisRun)
+            .options(selectinload(AnalysisRun.facts))
+            .where(AnalysisRun.id == run_id)
+        )
+
+        assert persisted_run is not None
+        assert persisted_run.status is AnalysisRunStatus.COMPLETED
+        assert len(persisted_run.facts) == 1
+        assert persisted_run.facts[0].support_status is ClaimSupportStatus.UNSUPPORTED
+        assert persisted_run.facts[0].evidence_codes == expected_evidence_codes
+        assert persisted_run.facts[0].supporting_excerpt is None
 
 
 def test_core_analysis_retains_failed_stage_audit_without_structured_rows(

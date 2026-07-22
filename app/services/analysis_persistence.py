@@ -11,7 +11,6 @@ from sqlalchemy.orm import Session
 from app.models import (
     AnalysisRun,
     AnalysisRunStatus,
-    ClaimSupportStatus,
     Fact,
     Hypothesis,
     IncidentStatus,
@@ -20,13 +19,16 @@ from app.models import (
 )
 from app.schemas.ai_outputs import (
     CriticOutputV1,
+    FactItemV1,
     HypothesesOutputV1,
     SummaryOutputV1,
     TimelineOutputV1,
 )
 from app.schemas.ai_provider import AIResult, AnalysisStage, PromptName
+from app.schemas.evidence import EvidenceManifest
 from app.services.ai_provider import AIProviderExecutionError
 from app.services.analysis_stage_runner import AnalysisStageOutputError
+from app.services.validation_service import ValidationService
 
 
 StageOutputT = TypeVar("StageOutputT", bound=BaseModel)
@@ -100,6 +102,7 @@ class AnalysisResultPersistence:
         summary_result: AIResult[SummaryOutputV1],
         timeline_result: AIResult[TimelineOutputV1],
         hypotheses_result: AIResult[HypothesesOutputV1],
+        evidence_manifest: EvidenceManifest,
         prompt_versions: dict[str, str],
         input_evidence_codes: list[str],
         stage_records: dict[str, dict[str, object]],
@@ -109,22 +112,7 @@ class AnalysisResultPersistence:
         analysis_run.input_evidence_codes = list(input_evidence_codes)
         analysis_run.raw_response = self._serialize_stage_records(stage_records)
         analysis_run.facts = [
-            Fact(
-                claim=fact.claim,
-                support_status=ClaimSupportStatus.UNSUPPORTED,
-                confidence=fact.confidence,
-                evidence_codes=list(
-                    dict.fromkeys(reference.evidence_id for reference in fact.evidence)
-                ),
-                supporting_excerpt=next(
-                    (
-                        reference.excerpt
-                        for reference in fact.evidence
-                        if reference.excerpt is not None
-                    ),
-                    None,
-                ),
-            )
+            self._build_fact(fact, evidence_manifest)
             for fact in summary_result.output.facts
         ]
         analysis_run.timeline_events = [
@@ -169,6 +157,37 @@ class AnalysisResultPersistence:
         self.commit(
             analysis_run,
             failure_message="The completed analysis results could not be saved.",
+        )
+
+    @staticmethod
+    def _build_fact(
+        fact: FactItemV1,
+        evidence_manifest: EvidenceManifest,
+    ) -> Fact:
+        outcomes = ValidationService.validate_output_references(
+            fact,
+            evidence_manifest,
+        )
+        supporting_excerpt = next(
+            (
+                reference.excerpt
+                for reference, outcome in zip(
+                    fact.evidence,
+                    outcomes,
+                    strict=True,
+                )
+                if outcome.is_valid and reference.excerpt is not None
+            ),
+            None,
+        )
+        return Fact(
+            claim=fact.claim,
+            support_status=ValidationService.classify_claim_support(outcomes),
+            confidence=fact.confidence,
+            evidence_codes=list(
+                dict.fromkeys(reference.evidence_id for reference in fact.evidence)
+            ),
+            supporting_excerpt=supporting_excerpt,
         )
 
     def persist_failed_analysis(

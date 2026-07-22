@@ -11,7 +11,9 @@ from sqlalchemy.orm import Session, joinedload, selectinload
 from app.models import (
     AnalysisRun,
     AnalysisRunStatus,
+    ClaimSupportStatus,
     EvidenceItem,
+    Fact,
     Incident,
     IncidentStatus,
 )
@@ -54,6 +56,8 @@ class AnalysisPageData:
     analysis_run: AnalysisRun
     summary_output: SummaryOutputV1 | None
     critic_output: CriticOutputV1 | None
+    confirmed_facts: tuple[Fact, ...]
+    unconfirmed_claims: tuple[Fact, ...]
 
 
 class AnalysisAlreadyRunningError(RuntimeError):
@@ -282,6 +286,7 @@ class AnalysisService:
                 summary_result=summary_result,
                 timeline_result=timeline_result,
                 hypotheses_result=hypotheses_result,
+                evidence_manifest=evidence_manifest,
                 prompt_versions=prompt_versions,
                 input_evidence_codes=input_evidence_codes,
                 stage_records=stage_records,
@@ -337,6 +342,16 @@ class AnalysisService:
                 f"Analysis run {run_id} was not found for incident "
                 f"{incident_public_id}."
             )
+        confirmed_facts = tuple(
+            fact
+            for fact in analysis_run.facts
+            if fact.support_status is ClaimSupportStatus.SUPPORTED
+        )
+        unconfirmed_claims = tuple(
+            fact
+            for fact in analysis_run.facts
+            if fact.support_status is not ClaimSupportStatus.SUPPORTED
+        )
         return AnalysisPageData(
             analysis_run=analysis_run,
             summary_output=self._result_persistence.extract_summary_output(
@@ -345,6 +360,8 @@ class AnalysisService:
             critic_output=self._result_persistence.extract_critic_output(
                 analysis_run.raw_response
             ),
+            confirmed_facts=confirmed_facts,
+            unconfirmed_claims=unconfirmed_claims,
         )
 
     def run_summary_stage(self, run_id: int) -> AIResult[SummaryOutputV1]:
