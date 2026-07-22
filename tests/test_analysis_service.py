@@ -16,10 +16,17 @@ from app.models import (
     EvidenceItem,
     EvidenceType,
     Fact,
+    Hypothesis,
     Incident,
     IncidentStatus,
+    TimelineEvent,
 )
-from app.schemas.ai_outputs import AIOutput, SummaryOutputV1, TimelineOutputV1
+from app.schemas.ai_outputs import (
+    AIOutput,
+    HypothesesOutputV1,
+    SummaryOutputV1,
+    TimelineOutputV1,
+)
 from app.schemas.ai_provider import (
     AIRequest,
     AIResult,
@@ -105,18 +112,22 @@ def _start_run(service: AnalysisService, public_id: str) -> AnalysisRun:
     )
 
 
-def _recording_summary_provider() -> _RecordingProvider:
+def _recording_stage_provider(fixture_name: str) -> _RecordingProvider:
     registry = PromptRegistry()
     provider = FakeAIProvider.from_file(
         FIXTURE_PATH,
-        "valid_summary",
+        fixture_name,
         prompt_resolver=registry.resolve_content,
         prompt_bundle_validator=registry.validate_bundle,
     )
     return _RecordingProvider(provider.generate)
 
 
-def _assert_no_summary_persistence(session: Session, run_id: int) -> None:
+def _recording_summary_provider() -> _RecordingProvider:
+    return _recording_stage_provider("valid_summary")
+
+
+def _assert_no_stage_persistence(session: Session, run_id: int) -> None:
     session.expire_all()
     persisted_run = session.scalar(select(AnalysisRun).where(AnalysisRun.id == run_id))
     assert persisted_run is not None
@@ -125,6 +136,8 @@ def _assert_no_summary_persistence(session: Session, run_id: int) -> None:
     assert persisted_run.prompt_versions == {}
     assert persisted_run.input_evidence_codes == []
     assert session.scalar(select(func.count(Fact.id))) == 0
+    assert session.scalar(select(func.count(TimelineEvent.id))) == 0
+    assert session.scalar(select(func.count(Hypothesis.id))) == 0
 
 
 def test_start_analysis_run_persists_running_lifecycle(
@@ -371,7 +384,7 @@ def test_summary_stage_rejects_non_summary_output_without_persistence(
 
     assert raw_response not in str(error_info.value)
     assert raw_response not in repr(error_info.value)
-    _assert_no_summary_persistence(service_session, analysis_run.id)
+    _assert_no_stage_persistence(service_session, analysis_run.id)
 
 
 @pytest.mark.parametrize(
@@ -433,7 +446,7 @@ def test_summary_stage_rejects_mismatched_traceability_without_persistence(
     raw_response = returned_raw_responses[0]
     assert raw_response not in str(error_info.value)
     assert raw_response not in repr(error_info.value)
-    _assert_no_summary_persistence(service_session, analysis_run.id)
+    _assert_no_stage_persistence(service_session, analysis_run.id)
 
 
 def test_summary_stage_requires_injected_provider(
@@ -463,3 +476,111 @@ def test_summary_stage_rejects_terminal_run_before_provider_call(
         service.run_summary_stage(analysis_run.id)
 
     assert provider.requests == []
+
+
+def test_timeline_stage_returns_direct_and_inferred_events_from_redacted_input(
+    service_session: Session,
+) -> None:
+    secret = "sk-production-secret-1234"
+    incident = _persist_incident(
+        service_session,
+        original_text=f"api_key={secret}\nCheckout failed",
+    )
+    provider = _recording_stage_provider("valid_timeline")
+    service = AnalysisService(service_session, ai_provider=provider)
+    analysis_run = _start_run(service, incident.public_id)
+
+    result = service.run_timeline_stage(analysis_run.id)
+
+    assert isinstance(result.output, TimelineOutputV1)
+    direct_event, inferred_event = result.output.events
+    assert direct_event.is_inferred is False
+    assert direct_event.timestamp == "time unknown"
+    assert inferred_event.is_inferred is True
+    assert inferred_event.confidence == 70
+    assert inferred_event.uncertainty_explanation is not None
+    request = provider.requests[0]
+    assert request.metadata.analysis_stage is AnalysisStage.TIMELINE
+    assert request.output_schema is OutputSchemaIdentifier.TIMELINE_V1
+    assert request.prompts.task.name is PromptName.TIMELINE
+    assert request.metadata.request_identifier.endswith("-timeline")
+    serialized_request = request.model_dump_json()
+    assert secret not in serialized_request
+    assert "[REDACTED_API_KEY]" in serialized_request
+    _assert_no_stage_persistence(service_session, analysis_run.id)
+
+
+def test_hypotheses_stage_returns_three_ranked_distinct_hypotheses(
+    service_session: Session,
+) -> None:
+    secret = "sk-production-secret-1234"
+    incident = _persist_incident(
+        service_session,
+        original_text=f"api_key={secret}\nCheckout failed",
+    )
+    provider = _recording_stage_provider("valid_hypotheses")
+    service = AnalysisService(service_session, ai_provider=provider)
+    analysis_run = _start_run(service, incident.public_id)
+
+    result = service.run_hypotheses_stage(analysis_run.id)
+
+    assert isinstance(result.output, HypothesesOutputV1)
+    assert [hypothesis.rank for hypothesis in result.output.hypotheses] == [1, 2, 3]
+    assert len({hypothesis.title for hypothesis in result.output.hypotheses}) == 3
+    for hypothesis in result.output.hypotheses:
+        assert hypothesis.supporting_evidence
+        assert hypothesis.missing_evidence
+        assert hypothesis.validation_test.description
+        assert hypothesis.risk_of_acting
+    request = provider.requests[0]
+    assert request.metadata.analysis_stage is AnalysisStage.HYPOTHESES
+    assert request.output_schema is OutputSchemaIdentifier.HYPOTHESES_V1
+    assert request.prompts.task.name is PromptName.HYPOTHESES
+    assert request.metadata.request_identifier.endswith("-hypotheses")
+    serialized_request = request.model_dump_json()
+    assert secret not in serialized_request
+    assert "[REDACTED_API_KEY]" in serialized_request
+    _assert_no_stage_persistence(service_session, analysis_run.id)
+
+
+def test_hypotheses_stage_rejects_materially_duplicate_titles_without_persistence(
+    service_session: Session,
+) -> None:
+    fixture_provider = _recording_stage_provider("valid_hypotheses")
+    duplicate_titles = ("Same cause", " same   CAUSE ", "SAME CAUSE")
+    returned_raw_responses: list[str] = []
+
+    def generate_duplicate_hypotheses(request: AIRequest) -> AIResult[AIOutput]:
+        result = fixture_provider.generate(request)
+        returned_raw_responses.append(result.audit.raw_response)
+        output = result.output
+        assert isinstance(output, HypothesesOutputV1)
+        duplicate_output = HypothesesOutputV1(
+            hypotheses=tuple(
+                hypothesis.model_copy(update={"title": duplicate_title})
+                for hypothesis, duplicate_title in zip(
+                    output.hypotheses,
+                    duplicate_titles,
+                    strict=True,
+                )
+            )
+        )
+        return AIResult[AIOutput](
+            output=duplicate_output,
+            metadata=result.metadata,
+            audit=result.audit,
+        )
+
+    incident = _persist_incident(service_session)
+    provider = _RecordingProvider(generate_duplicate_hypotheses)
+    service = AnalysisService(service_session, ai_provider=provider)
+    analysis_run = _start_run(service, incident.public_id)
+
+    with pytest.raises(AnalysisStageOutputError) as error_info:
+        service.run_hypotheses_stage(analysis_run.id)
+
+    assert len(returned_raw_responses) == 1
+    raw_response = returned_raw_responses[0]
+    assert raw_response not in str(error_info.value)
+    assert raw_response not in repr(error_info.value)
+    _assert_no_stage_persistence(service_session, analysis_run.id)

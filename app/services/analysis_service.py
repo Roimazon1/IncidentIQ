@@ -1,7 +1,9 @@
 """Lifecycle and provider-neutral stages for auditable analysis runs."""
 
 from hashlib import sha256
+from typing import TypeVar
 
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -14,7 +16,12 @@ from app.models import (
     IncidentStatus,
     utc_now,
 )
-from app.schemas.ai_outputs import AIOutput, SummaryOutputV1
+from app.schemas.ai_outputs import (
+    AIOutput,
+    HypothesesOutputV1,
+    SummaryOutputV1,
+    TimelineOutputV1,
+)
 from app.schemas.ai_provider import (
     AIRequest,
     AIResult,
@@ -30,6 +37,9 @@ from app.schemas.evidence import EvidenceManifest, EvidenceManifestSource
 from app.services.ai_provider import AIProvider
 from app.services.evidence_manifest_service import EvidenceManifestService
 from app.services.incident_service import IncidentService
+
+
+StageOutputT = TypeVar("StageOutputT", bound=BaseModel)
 
 
 class AnalysisEvidenceRequiredError(ValueError):
@@ -140,49 +150,38 @@ class AnalysisService:
 
     def run_summary_stage(self, run_id: int) -> AIResult[SummaryOutputV1]:
         """Run typed summary, fact, and assumption extraction on redacted evidence."""
-        analysis_run = self._get_analysis_run_or_raise(run_id)
-        self._require_running(
-            analysis_run,
+        return self._run_stage(
+            run_id,
             operation="run summary extraction",
-        )
-        provider = self._require_ai_provider()
-        evidence_manifest = self._build_redacted_evidence_manifest(analysis_run)
-        request = self._build_summary_request(analysis_run, evidence_manifest)
-
-        result = provider.generate(request)
-        return self._validate_summary_result(
-            result,
-            request=request,
-            analysis_run=analysis_run,
+            task_prompt=PromptName.SUMMARY,
+            analysis_stage=AnalysisStage.SUMMARY,
+            output_schema=OutputSchemaIdentifier.SUMMARY_V1,
+            output_type=SummaryOutputV1,
         )
 
-    @staticmethod
-    def _validate_summary_result(
-        result: AIResult[AIOutput],
-        *,
-        request: AIRequest,
-        analysis_run: AnalysisRun,
-    ) -> AIResult[SummaryOutputV1]:
-        metadata = result.metadata
-        output = result.output
-        if (
-            not isinstance(output, SummaryOutputV1)
-            or metadata.analysis_stage is not request.metadata.analysis_stage
-            or metadata.output_schema is not request.output_schema
-            or metadata.system_prompt != request.prompts.system
-            or metadata.task_prompt != request.prompts.task
-            or metadata.request_identifier != request.metadata.request_identifier
-            or metadata.provider_name != analysis_run.provider_name
-            or metadata.model_name != analysis_run.model_name
-        ):
-            raise AnalysisStageOutputError(
-                "The AI provider returned an invalid summary-stage output."
-            )
-        return AIResult[SummaryOutputV1](
-            output=output,
-            metadata=result.metadata,
-            audit=result.audit,
+    def run_timeline_stage(self, run_id: int) -> AIResult[TimelineOutputV1]:
+        """Reconstruct a typed timeline with direct and inferred event labels."""
+        return self._run_stage(
+            run_id,
+            operation="run timeline reconstruction",
+            task_prompt=PromptName.TIMELINE,
+            analysis_stage=AnalysisStage.TIMELINE,
+            output_schema=OutputSchemaIdentifier.TIMELINE_V1,
+            output_type=TimelineOutputV1,
         )
+
+    def run_hypotheses_stage(self, run_id: int) -> AIResult[HypothesesOutputV1]:
+        """Generate at least three ranked and materially distinct hypotheses."""
+        result = self._run_stage(
+            run_id,
+            operation="run hypothesis generation",
+            task_prompt=PromptName.HYPOTHESES,
+            analysis_stage=AnalysisStage.HYPOTHESES,
+            output_schema=OutputSchemaIdentifier.HYPOTHESES_V1,
+            output_type=HypothesesOutputV1,
+        )
+        self._require_materially_distinct_hypotheses(result.output)
+        return result
 
     def _get_analysis_run_or_raise(self, run_id: int) -> AnalysisRun:
         analysis_run = self.session.scalar(
@@ -272,10 +271,85 @@ class AnalysisService:
             sources,
         )
 
+    def _run_stage(
+        self,
+        run_id: int,
+        *,
+        operation: str,
+        task_prompt: PromptName,
+        analysis_stage: AnalysisStage,
+        output_schema: OutputSchemaIdentifier,
+        output_type: type[StageOutputT],
+    ) -> AIResult[StageOutputT]:
+        analysis_run = self._get_analysis_run_or_raise(run_id)
+        self._require_running(analysis_run, operation=operation)
+        provider = self._require_ai_provider()
+        evidence_manifest = self._build_redacted_evidence_manifest(analysis_run)
+        request = self._build_stage_request(
+            analysis_run,
+            evidence_manifest,
+            task_prompt=task_prompt,
+            analysis_stage=analysis_stage,
+            output_schema=output_schema,
+        )
+        result = provider.generate(request)
+        return self._validate_stage_result(
+            result,
+            request=request,
+            analysis_run=analysis_run,
+            output_type=output_type,
+        )
+
     @staticmethod
-    def _build_summary_request(
+    def _validate_stage_result(
+        result: AIResult[AIOutput],
+        *,
+        request: AIRequest,
+        analysis_run: AnalysisRun,
+        output_type: type[StageOutputT],
+    ) -> AIResult[StageOutputT]:
+        metadata = result.metadata
+        output = result.output
+        if (
+            not isinstance(output, output_type)
+            or metadata.analysis_stage is not request.metadata.analysis_stage
+            or metadata.output_schema is not request.output_schema
+            or metadata.system_prompt != request.prompts.system
+            or metadata.task_prompt != request.prompts.task
+            or metadata.request_identifier != request.metadata.request_identifier
+            or metadata.provider_name != analysis_run.provider_name
+            or metadata.model_name != analysis_run.model_name
+        ):
+            raise AnalysisStageOutputError(
+                "The AI provider returned an invalid analysis-stage output."
+            )
+        return AIResult[StageOutputT](
+            output=output,
+            metadata=result.metadata,
+            audit=result.audit,
+        )
+
+    @staticmethod
+    def _require_materially_distinct_hypotheses(
+        output: HypothesesOutputV1,
+    ) -> None:
+        normalized_titles = {
+            " ".join(hypothesis.title.casefold().split())
+            for hypothesis in output.hypotheses
+        }
+        if len(normalized_titles) < 3:
+            raise AnalysisStageOutputError(
+                "The AI provider returned fewer than three distinct hypotheses."
+            )
+
+    @staticmethod
+    def _build_stage_request(
         analysis_run: AnalysisRun,
         evidence_manifest: EvidenceManifest,
+        *,
+        task_prompt: PromptName,
+        analysis_stage: AnalysisStage,
+        output_schema: OutputSchemaIdentifier,
     ) -> AIRequest:
         manifest_checksum = sha256(
             evidence_manifest.model_dump_json().encode("utf-8")
@@ -288,15 +362,17 @@ class AnalysisService:
                     version=PromptVersion.V1,
                 ),
                 task=PromptReference(
-                    name=PromptName.SUMMARY,
+                    name=task_prompt,
                     version=PromptVersion.V1,
                 ),
             ),
-            output_schema=OutputSchemaIdentifier.SUMMARY_V1,
+            output_schema=output_schema,
             metadata=SafeAIMetadata(
-                request_identifier=f"analysis-run-{analysis_run.id}-summary",
+                request_identifier=(
+                    f"analysis-run-{analysis_run.id}-{analysis_stage.value}"
+                ),
                 incident_public_identifier=analysis_run.incident.public_id,
-                analysis_stage=AnalysisStage.SUMMARY,
+                analysis_stage=analysis_stage,
                 evidence_manifest_checksum=manifest_checksum,
             ),
         )
