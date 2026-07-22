@@ -43,6 +43,7 @@ from app.schemas.ai_provider import (
     PromptName,
     PromptReference,
     PromptVersion,
+    SuccessAuditData,
 )
 from app.services.analysis_service import (
     AnalysisAlreadyRunningError,
@@ -59,6 +60,10 @@ from app.services.ai_provider import AIProviderExecutionError, build_ai_result
 from app.services.incident_service import IncidentNotFoundError
 from app.services.prompt_registry import PromptRegistry
 from app.services.providers.fake_provider import FakeAIProvider
+from app.services.validation_service import (
+    EvidenceReferenceValidationStatus,
+    ValidationService,
+)
 
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "fake_ai_responses.json"
@@ -89,7 +94,7 @@ def _persist_incident(
     session: Session,
     *,
     with_evidence: bool = True,
-    original_text: str = "Checkout failed",
+    original_text: str = "checkout failed",
 ) -> Incident:
     incident = Incident(
         public_id="INC-000001",
@@ -451,7 +456,7 @@ def test_summary_stage_extracts_typed_facts_and_assumptions_from_redacted_input(
     secret = "sk-production-secret-1234"
     incident = _persist_incident(
         service_session,
-        original_text=f"api_key={secret}\nCheckout failed",
+        original_text=f"api_key={secret}\ncheckout failed",
     )
     provider = _recording_summary_provider()
     service = AnalysisService(service_session, ai_provider=provider)
@@ -480,6 +485,66 @@ def test_summary_stage_extracts_typed_facts_and_assumptions_from_redacted_input(
     assert secret not in serialized_request
     assert "[REDACTED_API_KEY]" in serialized_request
     assert result.audit.raw_response
+
+
+@pytest.mark.parametrize(
+    ("reference_update", "expected_status"),
+    [
+        (
+            {"evidence_id": "E-999"},
+            EvidenceReferenceValidationStatus.UNKNOWN_EVIDENCE_ID,
+        ),
+        (
+            {"excerpt": "fabricated database outage"},
+            EvidenceReferenceValidationStatus.EXCERPT_MISMATCH,
+        ),
+    ],
+    ids=["unknown-evidence-id", "fabricated-excerpt"],
+)
+def test_summary_stage_reports_invalid_traceability_without_terminating_run(
+    service_session: Session,
+    reference_update: dict[str, str],
+    expected_status: EvidenceReferenceValidationStatus,
+) -> None:
+    fixture_provider = _recording_summary_provider()
+    raw_audit_marker = "raw-audit-only-sensitive-provider-content"
+
+    def generate_invalid_reference(request: AIRequest) -> AIResult[AIOutput]:
+        result = fixture_provider.generate(request)
+        output = result.output
+        assert isinstance(output, SummaryOutputV1)
+        fact = output.facts[0]
+        invalid_reference = fact.evidence[0].model_copy(update=reference_update)
+        invalid_output = output.model_copy(
+            update={
+                "facts": (fact.model_copy(update={"evidence": (invalid_reference,)}),)
+            }
+        )
+        return AIResult[AIOutput](
+            output=invalid_output,
+            metadata=result.metadata,
+            audit=SuccessAuditData(raw_response=raw_audit_marker),
+        )
+
+    incident = _persist_incident(service_session)
+    provider = _RecordingProvider(generate_invalid_reference)
+    service = AnalysisService(service_session, ai_provider=provider)
+    analysis_run = _start_run(service, incident.public_id)
+
+    result = service.run_summary_stage(analysis_run.id)
+    outcomes = ValidationService.validate_output_references(
+        result.output,
+        provider.requests[0].evidence_manifest,
+    )
+
+    assert len(outcomes) == 1
+    assert outcomes[0].status is expected_status
+    assert outcomes[0].is_valid is False
+    assert result.audit.raw_response == raw_audit_marker
+    assert raw_audit_marker not in result.model_dump_json()
+    assert raw_audit_marker not in repr(result)
+    assert raw_audit_marker not in repr(outcomes)
+    _assert_no_stage_persistence(service_session, analysis_run.id)
 
 
 def test_summary_stage_rejects_non_summary_output_without_persistence(
@@ -610,7 +675,7 @@ def test_timeline_stage_returns_direct_and_inferred_events_from_redacted_input(
     secret = "sk-production-secret-1234"
     incident = _persist_incident(
         service_session,
-        original_text=(f"api_key={secret}\n2025-01-01T12:30:00+02:00 Checkout failed"),
+        original_text=(f"api_key={secret}\n2025-01-01T12:30:00+02:00 checkout failed"),
     )
     provider = _recording_stage_provider("valid_timeline")
     service = AnalysisService(service_session, ai_provider=provider)
@@ -642,7 +707,7 @@ def test_hypotheses_stage_returns_three_ranked_distinct_hypotheses(
     secret = "sk-production-secret-1234"
     incident = _persist_incident(
         service_session,
-        original_text=f"api_key={secret}\nCheckout failed",
+        original_text=f"api_key={secret}\ncheckout failed",
     )
     provider = _recording_stage_provider("valid_hypotheses")
     service = AnalysisService(service_session, ai_provider=provider)
@@ -718,7 +783,7 @@ def test_critic_stage_returns_separate_typed_redacted_result(
     secret = "sk-production-secret-1234"
     incident = _persist_incident(
         service_session,
-        original_text=f"api_key={secret}\nCheckout failed",
+        original_text=f"api_key={secret}\ncheckout failed",
     )
     provider = _recording_stage_provider("valid_critic")
     service = AnalysisService(service_session, ai_provider=provider)
@@ -761,7 +826,7 @@ def test_core_analysis_persists_all_validated_outputs_and_audit_data(
         incident = _persist_incident(
             session,
             original_text=(
-                f"api_key={secret}\n2025-01-01T12:30:00+02:00 Checkout failed"
+                f"api_key={secret}\n2025-01-01T12:30:00+02:00 checkout failed"
             ),
         )
         service = AnalysisService(session, ai_provider=provider)

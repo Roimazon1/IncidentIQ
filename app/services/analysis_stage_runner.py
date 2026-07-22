@@ -24,6 +24,7 @@ from app.schemas.ai_provider import (
 from app.schemas.evidence import EvidenceManifest, EvidenceManifestSource
 from app.services.ai_provider import AIProvider
 from app.services.evidence_manifest_service import EvidenceManifestService
+from app.services.validation_service import ValidationService
 
 
 StageOutputT = TypeVar("StageOutputT", bound=BaseModel)
@@ -106,6 +107,8 @@ class AnalysisStageRunner:
         critic_context: CriticContextV1 | None = None,
     ) -> AIResult[StageOutputT]:
         """Execute one typed stage and enforce exact request/result traceability."""
+        if critic_context is not None:
+            self._validate_critic_context(critic_context, evidence_manifest)
         request = self._build_stage_request(
             analysis_run,
             evidence_manifest,
@@ -115,12 +118,17 @@ class AnalysisStageRunner:
             critic_context=critic_context,
         )
         result = self._require_ai_provider().generate(request)
-        return self._validate_stage_result(
+        typed_result = self._validate_stage_result(
             result,
             request=request,
             analysis_run=analysis_run,
             output_type=output_type,
         )
+        ValidationService.validate_output_references(
+            typed_result.output,
+            evidence_manifest,
+        )
+        return typed_result
 
     @staticmethod
     def require_materially_distinct_hypotheses(
@@ -145,6 +153,21 @@ class AnalysisStageRunner:
                 "An AI provider is required to run analysis stages."
             )
         return self._ai_provider
+
+    @staticmethod
+    def _validate_critic_context(
+        critic_context: CriticContextV1,
+        evidence_manifest: EvidenceManifest,
+    ) -> None:
+        for initial_output in (
+            critic_context.summary,
+            critic_context.timeline,
+            critic_context.hypotheses,
+        ):
+            ValidationService.validate_output_references(
+                initial_output,
+                evidence_manifest,
+            )
 
     @staticmethod
     def _validate_stage_result(
