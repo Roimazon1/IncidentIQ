@@ -120,9 +120,7 @@ def test_in_place_export_metadata_change_persists(
     with model_session_factory() as session:
         loaded_report = session.get(Report, report_id)
         assert loaded_report is not None
-        assert loaded_report.export_metadata == {
-            "filename": "incident-report.md"
-        }
+        assert loaded_report.export_metadata == {"filename": "incident-report.md"}
 
 
 def test_database_delete_of_incident_cascades_to_report(

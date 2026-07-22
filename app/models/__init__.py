@@ -6,7 +6,9 @@ from app.models.analysis import (
     Fact,
     Hypothesis,
     RecommendedAction,
+    RUNNING_ANALYSIS_INDEX_NAME,
     TimelineEvent,
+    running_analysis_per_incident_index,
 )
 from app.models.enums import (
     AnalysisRunStatus,
@@ -43,6 +45,8 @@ __all__ = [
     "IncidentStatus",
     "RecommendedAction",
     "Report",
+    "RUNNING_ANALYSIS_INDEX_NAME",
+    "running_analysis_per_incident_index",
     "TimestampMixin",
     "TimelineEvent",
     "UTCDateTime",

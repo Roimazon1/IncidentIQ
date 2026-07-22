@@ -6,9 +6,7 @@ from app.models.incident import INCIDENT_PUBLIC_ID_LENGTH
 
 INCIDENT_PUBLIC_ID_PREFIX = "INC-"
 EVIDENCE_CODE_PREFIX = "E-"
-INCIDENT_PUBLIC_ID_DIGITS = INCIDENT_PUBLIC_ID_LENGTH - len(
-    INCIDENT_PUBLIC_ID_PREFIX
-)
+INCIDENT_PUBLIC_ID_DIGITS = INCIDENT_PUBLIC_ID_LENGTH - len(INCIDENT_PUBLIC_ID_PREFIX)
 EVIDENCE_CODE_DIGITS = EVIDENCE_CODE_LENGTH - len(EVIDENCE_CODE_PREFIX)
 MAX_INCIDENT_SEQUENCE = (10**INCIDENT_PUBLIC_ID_DIGITS) - 1
 MAX_EVIDENCE_SEQUENCE = (10**EVIDENCE_CODE_DIGITS) - 1
@@ -25,9 +23,7 @@ def _validate_sequence_number(
     if sequence_number < 1:
         raise ValueError(f"{identifier_name} sequence number must be positive")
     if sequence_number > maximum:
-        raise ValueError(
-            f"{identifier_name} sequence number cannot exceed {maximum}"
-        )
+        raise ValueError(f"{identifier_name} sequence number cannot exceed {maximum}")
 
 
 def generate_incident_public_id(sequence_number: int) -> str:

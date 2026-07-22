@@ -63,8 +63,20 @@ def test_init_db_creates_all_tables_and_preserves_existing_data(
             )
             session.commit()
 
+        models.running_analysis_per_incident_index.drop(
+            bind=engine,
+            checkfirst=True,
+        )
+        assert models.RUNNING_ANALYSIS_INDEX_NAME not in {
+            index["name"] for index in inspect(engine).get_indexes("analysis_runs")
+        }
+
         second_result = _run_initialization_script(repository_root, database_url)
         _assert_script_succeeded(second_result)
+
+        analysis_index_names = {
+            index["name"] for index in inspect(engine).get_indexes("analysis_runs")
+        }
 
         with Session(engine) as session:
             incident_count = session.scalar(
@@ -74,3 +86,4 @@ def test_init_db_creates_all_tables_and_preserves_existing_data(
         engine.dispose()
 
     assert incident_count == 1
+    assert models.RUNNING_ANALYSIS_INDEX_NAME in analysis_index_names

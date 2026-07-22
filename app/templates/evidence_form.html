@@ -141,7 +141,9 @@
                   The original text is preserved exactly for traceability.
                 </div>
               </div>
-              <button class="btn btn-primary" type="submit">Save pasted evidence</button>
+              <button class="btn btn-primary" type="submit" data-loading-label="Saving…">
+                Save pasted evidence
+              </button>
             </div>
           </form>
         </div>
@@ -193,7 +195,13 @@
                   Supported formats: {{ upload_formats_text }}.
                 </div>
               </div>
-              <button class="btn btn-primary" type="submit">Upload evidence</button>
+              <button
+                class="btn btn-primary"
+                type="submit"
+                data-loading-label="Uploading…"
+              >
+                Upload evidence
+              </button>
             </div>
           </form>
         </div>
@@ -257,7 +265,11 @@
                         </select>
                       </div>
                       <div class="col-md-2">
-                        <button class="btn btn-outline-primary w-100" type="submit">
+                        <button
+                          class="btn btn-outline-primary w-100"
+                          type="submit"
+                          data-loading-label="Updating…"
+                        >
                           Update type
                         </button>
                       </div>

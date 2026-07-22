@@ -3,78 +3,211 @@
 {% block title %}{{ incident.public_id }} | {{ app_name }}{% endblock %}
 
 {% block content %}
-  <div class="row g-4">
-    <div class="col-lg-5">
-      <section class="card border-0 shadow-sm" aria-labelledby="incident-heading">
-        <div class="card-body p-4">
-          <div class="d-flex justify-content-between align-items-start gap-3 mb-3">
-            <div>
-              <div class="text-body-secondary small">{{ incident.public_id }}</div>
-              <h1 class="h3 mb-0" id="incident-heading">{{ incident.name }}</h1>
-            </div>
-            <span class="badge text-bg-secondary">{{ incident.status.value }}</span>
-          </div>
-          <dl class="mb-0">
-            <dt>Affected service</dt>
-            <dd>{{ incident.affected_service }}</dd>
-            <dt>Description</dt>
-            <dd class="text-break">{{ incident.description }}</dd>
-            <dt>Reported start time</dt>
-            <dd>
-              {% if incident.reported_start_time %}
-                <time datetime="{{ incident.reported_start_time.isoformat() }}">
-                  {{ incident.reported_start_time | incident_datetime }}
-                </time>
-              {% else %}
-                Not provided
-              {% endif %}
-            </dd>
-            <dt>Created</dt>
-            <dd class="mb-0">
-              <time datetime="{{ incident.created_at.isoformat() }}">
-                {{ incident.created_at | incident_datetime }}
-              </time>
-            </dd>
-          </dl>
-          <div class="d-flex flex-wrap gap-2 mt-4">
-            <a
-              class="btn btn-outline-secondary"
-              href="{{ url_for('new_evidence_form', public_id=incident.public_id) }}?tab=saved"
-            >
-              View all evidence
-            </a>
-            <a
-              class="btn btn-outline-primary"
-              href="{{ url_for('new_evidence_form', public_id=incident.public_id) }}"
-            >
-              Add evidence
-            </a>
-          </div>
+  <section class="card border-0 shadow-sm" aria-labelledby="incident-heading">
+    <div class="card-body p-4">
+      <div class="d-flex justify-content-between align-items-start gap-3 mb-3">
+        <div>
+          <div class="text-body-secondary small">{{ incident.public_id }}</div>
+          <h1 class="h3 mb-0" id="incident-heading">{{ incident.name }}</h1>
         </div>
-      </section>
+        <span class="badge text-bg-secondary">{{ incident.status.value }}</span>
+      </div>
+
+      <div class="d-flex flex-wrap gap-2">
+        <form method="post" action="{{ url_for('start_analysis', public_id=incident.public_id) }}">
+          <button
+            class="btn btn-primary"
+            type="submit"
+            data-loading-label="Running analysis…"
+            {% if incident.status.value in ["DRAFT", "ANALYZING"] %}disabled{% endif %}
+          >
+            {% if incident.status.value == "ANALYZING" %}Analysis running{% else %}Run analysis{% endif %}
+          </button>
+        </form>
+        <a
+          class="btn btn-outline-secondary"
+          href="{{ url_for('new_evidence_form', public_id=incident.public_id) }}?tab=saved"
+        >
+          View all evidence
+        </a>
+        <a
+          class="btn btn-outline-primary"
+          href="{{ url_for('new_evidence_form', public_id=incident.public_id) }}"
+        >
+          Add evidence
+        </a>
+      </div>
+      {% if incident.status.value == "DRAFT" %}
+        <p class="small text-body-secondary mt-2 mb-0">
+          Add evidence before running an analysis.
+        </p>
+      {% endif %}
     </div>
+  </section>
 
-    <div class="col-lg-7">
-      <section class="card border-0 shadow-sm" aria-labelledby="edit-heading">
-        <div class="card-body p-4">
-          <h2 class="h4" id="edit-heading">Edit incident metadata</h2>
+  <ul
+    class="nav nav-tabs mt-4"
+    id="incident-detail-tabs"
+    role="tablist"
+    aria-label="Incident detail sections"
+  >
+    <li class="nav-item" role="presentation">
+      <a
+        class="nav-link{% if active_tab == 'overview' %} active{% endif %}"
+        id="overview-tab"
+        href="{{ url_for('incident_detail', public_id=incident.public_id) }}?tab=overview"
+        role="tab"
+        aria-controls="overview-panel"
+        aria-selected="{% if active_tab == 'overview' %}true{% else %}false{% endif %}"
+      >
+        Overview
+      </a>
+    </li>
+    <li class="nav-item" role="presentation">
+      <a
+        class="nav-link{% if active_tab == 'edit' %} active{% endif %}"
+        id="edit-tab"
+        href="{{ url_for('incident_detail', public_id=incident.public_id) }}?tab=edit"
+        role="tab"
+        aria-controls="edit-panel"
+        aria-selected="{% if active_tab == 'edit' %}true{% else %}false{% endif %}"
+      >
+        Edit incident
+      </a>
+    </li>
+    <li class="nav-item" role="presentation">
+      <a
+        class="nav-link{% if active_tab == 'history' %} active{% endif %}"
+        id="history-tab"
+        href="{{ url_for('incident_detail', public_id=incident.public_id) }}?tab=history"
+        role="tab"
+        aria-controls="history-panel"
+        aria-selected="{% if active_tab == 'history' %}true{% else %}false{% endif %}"
+      >
+        Analysis history ({{ analysis_run_count }})
+      </a>
+    </li>
+  </ul>
 
-          {% if errors %}
-            <div class="alert alert-danger" role="alert">
-              <ul class="mb-0">
-                {% for error in errors %}
-                  <li>{{ error }}</li>
-                {% endfor %}
-              </ul>
-            </div>
+  <div
+    class="tab-content border border-top-0 rounded-bottom bg-white shadow-sm"
+    id="incident-detail-tab-content"
+  >
+    <section
+      class="tab-pane fade p-4{% if active_tab == 'overview' %} show active{% endif %}"
+      id="overview-panel"
+      role="tabpanel"
+      aria-labelledby="overview-tab"
+      tabindex="0"
+    >
+      <h2 class="h4">Incident overview</h2>
+      <dl class="mb-0">
+        <dt>Affected service</dt>
+        <dd>{{ incident.affected_service }}</dd>
+        <dt>Description</dt>
+        <dd class="text-break">{{ incident.description }}</dd>
+        <dt>Approximate start time</dt>
+        <dd>
+          {% if incident.reported_start_time %}
+            <time datetime="{{ incident.reported_start_time.isoformat() }}">
+              {{ incident.reported_start_time | incident_datetime }}
+            </time>
+          {% else %}
+            Not provided
           {% endif %}
+        </dd>
+        <dt>Created</dt>
+        <dd class="mb-0">
+          <time datetime="{{ incident.created_at.isoformat() }}">
+            {{ incident.created_at | incident_datetime }}
+          </time>
+        </dd>
+      </dl>
+    </section>
 
-          <form method="post" action="{{ url_for('update_incident', public_id=incident.public_id) }}">
-            {% include "partials/incident_fields.html" %}
-            <button class="btn btn-primary" type="submit">Save changes</button>
-          </form>
+    <section
+      class="tab-pane fade p-4{% if active_tab == 'edit' %} show active{% endif %}"
+      id="edit-panel"
+      role="tabpanel"
+      aria-labelledby="edit-tab"
+      tabindex="0"
+    >
+      <h2 class="h4" id="edit-heading">Edit incident metadata</h2>
+
+      {% if errors %}
+        <div class="alert alert-danger" role="alert">
+          <ul class="mb-0">
+            {% for error in errors %}
+              <li>{{ error }}</li>
+            {% endfor %}
+          </ul>
         </div>
-      </section>
-    </div>
+      {% endif %}
+
+      <form
+        method="post"
+        action="{{ url_for('update_incident', public_id=incident.public_id) }}?tab=edit"
+      >
+        {% include "partials/incident_fields.html" %}
+        <button class="btn btn-primary" type="submit" data-loading-label="Saving…">
+          Save changes
+        </button>
+      </form>
+    </section>
+
+    <section
+      class="tab-pane fade p-4{% if active_tab == 'history' %} show active{% endif %}"
+      id="history-panel"
+      role="tabpanel"
+      aria-labelledby="history-tab"
+      tabindex="0"
+    >
+      <h2 class="h4" id="analysis-history-heading">Analysis history</h2>
+      {% if analysis_runs %}
+        <div class="table-responsive">
+          <table class="table align-middle mb-0">
+            <thead>
+              <tr>
+                <th scope="col">Run ID</th>
+                <th scope="col">Status</th>
+                <th scope="col">Started</th>
+                <th scope="col">Provider</th>
+                <th scope="col">Model</th>
+                <th scope="col"><span class="visually-hidden">Actions</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for analysis_run in analysis_runs %}
+                <tr>
+                  <th scope="row">{{ analysis_run.id }}</th>
+                  <td>{{ analysis_run.status.value }}</td>
+                  <td>
+                    <time datetime="{{ analysis_run.started_at.isoformat() }}">
+                      {{ analysis_run.started_at | incident_datetime }}
+                    </time>
+                  </td>
+                  <td>{{ analysis_run.provider_name }}</td>
+                  <td>{{ analysis_run.model_name }}</td>
+                  <td class="text-end">
+                    <a
+                      class="btn btn-sm btn-outline-primary"
+                      href="{{ url_for(
+                        'analysis_detail',
+                        public_id=incident.public_id,
+                        run_id=analysis_run.id
+                      ) }}"
+                    >
+                      Open analysis
+                    </a>
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% else %}
+        <p class="text-body-secondary mb-0">No analysis has been run for this incident.</p>
+      {% endif %}
+    </section>
   </div>
 {% endblock %}

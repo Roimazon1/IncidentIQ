@@ -56,9 +56,7 @@ def test_incident_create_rejects_generated_fields() -> None:
 def test_incident_update_is_partial_and_rejects_blank_values() -> None:
     update = IncidentUpdate(affected_service="  payments  ")
 
-    assert update.model_dump(exclude_unset=True) == {
-        "affected_service": "payments"
-    }
+    assert update.model_dump(exclude_unset=True) == {"affected_service": "payments"}
     with pytest.raises(ValidationError):
         IncidentUpdate(name="   ")
 

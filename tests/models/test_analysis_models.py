@@ -19,6 +19,7 @@ from app.models import (
     HypothesisStatus,
     Incident,
     RecommendedAction,
+    RUNNING_ANALYSIS_INDEX_NAME,
     TimelineEvent,
 )
 from app.models.analysis import recommended_action_hypotheses
@@ -153,6 +154,8 @@ def test_analysis_models_expose_locked_fields_and_relationships() -> None:
         foreign_key.ondelete == "CASCADE"
         for foreign_key in recommended_action_hypotheses.foreign_keys
     )
+    running_indexes = {index.name: index for index in AnalysisRun.__table__.indexes}
+    assert running_indexes[RUNNING_ANALYSIS_INDEX_NAME].unique is True
 
     fact_constraint_names = {
         constraint.name
@@ -171,6 +174,78 @@ def test_analysis_models_expose_locked_fields_and_relationships() -> None:
         == ("analysis_run_id", "rank")
         for constraint in Hypothesis.__table__.constraints
     )
+
+
+def test_only_one_running_analysis_is_allowed_per_incident(
+    model_session_factory: sessionmaker[Session],
+) -> None:
+    with model_session_factory() as session:
+        incident = Incident(
+            public_id="INC-000001",
+            name="Checkout failures",
+            description="Intermittent checkout errors",
+            affected_service="checkout",
+        )
+        session.add(incident)
+        session.commit()
+
+        session.add(
+            AnalysisRun(
+                incident_id=incident.id,
+                provider_name="fake",
+                model_name="fixture-v1",
+                status=AnalysisRunStatus.RUNNING,
+            )
+        )
+        session.commit()
+
+        session.add(
+            AnalysisRun(
+                incident_id=incident.id,
+                provider_name="gemini",
+                model_name="gemini-2.5-flash",
+                status=AnalysisRunStatus.RUNNING,
+            )
+        )
+        with pytest.raises(IntegrityError):
+            session.commit()
+        session.rollback()
+
+        running_run = session.scalar(
+            select(AnalysisRun).where(
+                AnalysisRun.incident_id == incident.id,
+                AnalysisRun.status == AnalysisRunStatus.RUNNING,
+            )
+        )
+        assert running_run is not None
+        running_run.status = AnalysisRunStatus.COMPLETED
+        session.add_all(
+            [
+                AnalysisRun(
+                    incident_id=incident.id,
+                    provider_name="fake",
+                    model_name="failed-model",
+                    status=AnalysisRunStatus.FAILED,
+                ),
+                AnalysisRun(
+                    incident_id=incident.id,
+                    provider_name="fake",
+                    model_name="next-running-model",
+                    status=AnalysisRunStatus.RUNNING,
+                ),
+            ]
+        )
+        session.commit()
+
+        retained_statuses = list(
+            session.scalars(
+                select(AnalysisRun.status).where(AnalysisRun.incident_id == incident.id)
+            )
+        )
+
+    assert retained_statuses.count(AnalysisRunStatus.RUNNING) == 1
+    assert AnalysisRunStatus.COMPLETED in retained_statuses
+    assert AnalysisRunStatus.FAILED in retained_statuses
 
 
 def test_complete_analysis_run_persists_structured_results_and_audit_data(

@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from app.config import get_settings
+from app.routers.analysis import router as analysis_router
 from app.routers.dashboard import router as dashboard_router
 from app.routers.evidence import router as evidence_router
 from app.routers.incidents import router as incidents_router
@@ -21,6 +22,7 @@ app.mount(
 app.include_router(dashboard_router)
 app.include_router(incidents_router)
 app.include_router(evidence_router)
+app.include_router(analysis_router)
 
 
 @app.get("/health")

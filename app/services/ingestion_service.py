@@ -174,9 +174,7 @@ class IngestionService:
                 f"{incident_public_id}."
             )
 
-        for field_name, value in evidence_data.model_dump(
-            exclude_unset=True
-        ).items():
+        for field_name, value in evidence_data.model_dump(exclude_unset=True).items():
             setattr(evidence, field_name, value)
         try:
             self.session.commit()

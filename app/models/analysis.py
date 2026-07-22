@@ -13,6 +13,7 @@ from sqlalchemy import (
     Enum as SQLAlchemyEnum,
     ForeignKey,
     Integer,
+    Index,
     String,
     Table,
     Text,
@@ -143,6 +144,15 @@ class AnalysisRun(Base):
         cascade="all, delete-orphan",
         single_parent=True,
     )
+
+
+RUNNING_ANALYSIS_INDEX_NAME = "uq_analysis_runs_one_running_per_incident"
+running_analysis_per_incident_index = Index(
+    RUNNING_ANALYSIS_INDEX_NAME,
+    AnalysisRun.incident_id,
+    unique=True,
+    sqlite_where=AnalysisRun.status == AnalysisRunStatus.RUNNING,
+)
 
 
 class Fact(Base):
