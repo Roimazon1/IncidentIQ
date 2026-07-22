@@ -141,6 +141,20 @@ def _resolve_prompt(reference: PromptReference) -> str:
     raise LookupError(reference.name)
 
 
+def _validate_prompt_bundle(
+    bundle: PromptBundle,
+    analysis_stage: AnalysisStage,
+) -> None:
+    if (
+        bundle.system.name is not PromptName.SYSTEM
+        or bundle.system.version is not PromptVersion.V1
+        or bundle.task.name is not PromptName.SUMMARY
+        or bundle.task.version is not PromptVersion.V1
+        or analysis_stage is not AnalysisStage.SUMMARY
+    ):
+        raise LookupError("unregistered prompt bundle")
+
+
 def _summary_request() -> AIRequest:
     return AIRequest(
         evidence_manifest=EvidenceManifest(
@@ -198,6 +212,7 @@ def _provider(
     return GeminiAIProvider(
         model_name="gemini-2.5-flash",
         prompt_resolver=_resolve_prompt,
+        prompt_bundle_validator=_validate_prompt_bundle,
         client=client,
         max_attempts=max_attempts,
         retry_delay_seconds=0.5,
@@ -428,6 +443,35 @@ def test_unknown_local_output_schema_fails_before_client_call() -> None:
     assert "unregistered-output-v1" not in repr(error)
 
 
+def test_task_prompt_for_wrong_stage_fails_before_client_call() -> None:
+    client = _FakeClient([_FakeResponse(_valid_summary_response())])
+    provider = _provider(client)
+    request = _summary_request().model_copy(
+        update={
+            "prompts": PromptBundle(
+                system=PromptReference(
+                    name=PromptName.SYSTEM,
+                    version=PromptVersion.V1,
+                ),
+                task=PromptReference(
+                    name=PromptName.TIMELINE,
+                    version=PromptVersion.V1,
+                ),
+            )
+        }
+    )
+
+    with pytest.raises(AIProviderExecutionError) as error_info:
+        provider.generate(request)
+
+    error = error_info.value
+    assert client.recorded_models.calls == []
+    assert error.details.category is AIFailureCategory.UNKNOWN_PROMPT
+    assert error.details.audit is not None
+    assert error.details.audit.attempt_count == 1
+    assert error.details.audit.raw_response is None
+
+
 def test_gemini_server_error_retries_and_then_succeeds() -> None:
     client = _FakeClient(
         [
@@ -506,6 +550,7 @@ def test_injected_client_does_not_require_or_read_api_key() -> None:
     provider = GeminiAIProvider.from_settings(
         settings,
         prompt_resolver=_resolve_prompt,
+        prompt_bundle_validator=_validate_prompt_bundle,
         client=client,
     )
 
@@ -540,6 +585,7 @@ def test_real_client_is_constructed_only_without_injected_client(
     provider = GeminiAIProvider.from_settings(
         settings,
         prompt_resolver=_resolve_prompt,
+        prompt_bundle_validator=_validate_prompt_bundle,
     )
 
     assert received_keys == ["test-only-key"]
@@ -556,6 +602,7 @@ def test_invalid_model_configuration_fails_before_client_call(
         GeminiAIProvider(
             model_name=model_name,
             prompt_resolver=_resolve_prompt,
+            prompt_bundle_validator=_validate_prompt_bundle,
             client=client,
         )
 
@@ -572,6 +619,7 @@ def test_missing_api_key_fails_before_real_client_construction() -> None:
         GeminiAIProvider(
             model_name="gemini-2.5-flash",
             prompt_resolver=_resolve_prompt,
+            prompt_bundle_validator=_validate_prompt_bundle,
         )
 
 

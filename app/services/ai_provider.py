@@ -26,8 +26,11 @@ from app.schemas.ai_provider import (
     AIRequest,
     AIResult,
     AIResultMetadata,
+    AnalysisStage,
     FailureAuditData,
     OutputSchemaIdentifier,
+    PromptBundle,
+    PromptReference,
     SuccessAuditData,
 )
 
@@ -82,6 +85,10 @@ class AIProviderExecutionError(RuntimeError):
             f"request_identifier={self.details.request_identifier!r}, "
             f"explanation={self.details.explanation!r})"
         )
+
+
+PromptResolver = Callable[[PromptReference], str]
+PromptBundleValidator = Callable[[PromptBundle, AnalysisStage], None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -271,6 +278,48 @@ def raise_ai_provider_failure(
             audit=audit,
         )
     ) from None
+
+
+def resolve_request_prompts(
+    request: AIRequest,
+    *,
+    prompt_resolver: PromptResolver,
+    prompt_bundle_validator: PromptBundleValidator,
+) -> tuple[str, str]:
+    """Validate a request's prompt mapping and return both registered contents."""
+    # noinspection PyBroadException
+    try:
+        prompt_bundle_validator(
+            request.prompts,
+            request.metadata.analysis_stage,
+        )
+        system_prompt = prompt_resolver(request.prompts.system)
+        task_prompt = prompt_resolver(request.prompts.task)
+    except (LookupError, OSError, UnicodeError, ValueError):
+        raise_ai_provider_failure(
+            request=request,
+            category=AIFailureCategory.UNKNOWN_PROMPT,
+            attempt_count=1,
+        )
+    except Exception:
+        # Both callables are injected boundaries; sanitize undocumented failures.
+        raise_ai_provider_failure(
+            request=request,
+            category=AIFailureCategory.UNKNOWN_PROMPT,
+            attempt_count=1,
+        )
+    if (
+        not isinstance(system_prompt, str)
+        or not isinstance(task_prompt, str)
+        or not system_prompt.strip()
+        or not task_prompt.strip()
+    ):
+        raise_ai_provider_failure(
+            request=request,
+            category=AIFailureCategory.UNKNOWN_PROMPT,
+            attempt_count=1,
+        )
+    return system_prompt, task_prompt
 
 
 ProviderBuilder = Callable[[Settings], AIProvider]

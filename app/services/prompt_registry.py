@@ -172,6 +172,14 @@ class PromptRegistry:
         """Return validated content for an allowlisted prompt reference."""
         return self.resolve(reference).content
 
+    def validate_bundle(
+        self,
+        bundle: PromptBundle,
+        analysis_stage: AnalysisStage,
+    ) -> None:
+        """Validate registered prompt roles and task-stage mapping."""
+        self.resolve_bundle(bundle, analysis_stage)
+
     def resolve_bundle(
         self,
         bundle: PromptBundle,

@@ -17,14 +17,16 @@ from app.schemas.ai_provider import (
     AIRequest,
     AIResult,
     LogSafeName,
-    PromptReference,
 )
 from app.services.ai_provider import (
     AIProviderConfigurationError,
     BoundedRetryPolicy,
+    PromptBundleValidator,
+    PromptResolver,
     build_ai_result,
     process_structured_response,
     raise_ai_provider_failure,
+    resolve_request_prompts,
     select_output_model,
 )
 
@@ -116,7 +118,6 @@ class _OfficialGeminiClientAdapter(GeminiClientProtocol):
         return self._models
 
 
-PromptResolver = Callable[[PromptReference], str]
 Sleeper = Callable[[float], None]
 
 DEFAULT_MAX_ATTEMPTS = 3
@@ -197,6 +198,7 @@ class GeminiAIProvider:
         *,
         model_name: str | None,
         prompt_resolver: PromptResolver,
+        prompt_bundle_validator: PromptBundleValidator,
         client: GeminiClientProtocol | None = None,
         api_key: str | None = None,
         max_attempts: int = DEFAULT_MAX_ATTEMPTS,
@@ -206,6 +208,7 @@ class GeminiAIProvider:
     ) -> None:
         self.model_name = self._validate_model_name(model_name)
         self._prompt_resolver = prompt_resolver
+        self._prompt_bundle_validator = prompt_bundle_validator
         self._retry_policy = BoundedRetryPolicy(
             max_attempts=max_attempts,
             retry_delay_seconds=retry_delay_seconds,
@@ -222,6 +225,7 @@ class GeminiAIProvider:
         settings: Settings,
         *,
         prompt_resolver: PromptResolver,
+        prompt_bundle_validator: PromptBundleValidator,
         client: GeminiClientProtocol | None = None,
         max_attempts: int = DEFAULT_MAX_ATTEMPTS,
         retry_delay_seconds: float = DEFAULT_RETRY_DELAY_SECONDS,
@@ -235,6 +239,7 @@ class GeminiAIProvider:
         return cls(
             model_name=settings.gemini_model,
             prompt_resolver=prompt_resolver,
+            prompt_bundle_validator=prompt_bundle_validator,
             client=client,
             api_key=api_key,
             max_attempts=max_attempts,
@@ -246,7 +251,11 @@ class GeminiAIProvider:
     def generate(self, request: AIRequest) -> AIResult[AIOutput]:
         """Call Gemini with redacted data and return only locally validated output."""
         output_model = select_output_model(request)
-        system_prompt, task_prompt = self._resolve_prompts(request)
+        system_prompt, task_prompt = resolve_request_prompts(
+            request,
+            prompt_resolver=self._prompt_resolver,
+            prompt_bundle_validator=self._prompt_bundle_validator,
+        )
         contents = self._build_contents(request, task_prompt)
         config: GeminiGenerateConfig = {
             "system_instruction": system_prompt,
@@ -364,37 +373,6 @@ class GeminiAIProvider:
             raise AIProviderConfigurationError(
                 "The Gemini provider client could not be constructed."
             ) from None
-
-    def _resolve_prompts(self, request: AIRequest) -> tuple[str, str]:
-        # noinspection PyBroadException
-        try:
-            system_prompt = self._prompt_resolver(request.prompts.system)
-            task_prompt = self._prompt_resolver(request.prompts.task)
-        except (LookupError, OSError, UnicodeError, ValueError):
-            raise_ai_provider_failure(
-                request=request,
-                category=AIFailureCategory.UNKNOWN_PROMPT,
-                attempt_count=1,
-            )
-        except Exception:
-            # A resolver is an injected boundary; sanitize unexpected failures locally.
-            raise_ai_provider_failure(
-                request=request,
-                category=AIFailureCategory.UNKNOWN_PROMPT,
-                attempt_count=1,
-            )
-        if (
-            not isinstance(system_prompt, str)
-            or not isinstance(task_prompt, str)
-            or not system_prompt.strip()
-            or not task_prompt.strip()
-        ):
-            raise_ai_provider_failure(
-                request=request,
-                category=AIFailureCategory.UNKNOWN_PROMPT,
-                attempt_count=1,
-            )
-        return system_prompt, task_prompt
 
     @staticmethod
     def _build_contents(request: AIRequest, task_prompt: str) -> str:

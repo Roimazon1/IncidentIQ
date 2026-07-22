@@ -28,6 +28,7 @@ from app.schemas.evidence import (
 )
 from app.services.ai_provider import AIProvider, AIProviderExecutionError
 from app.services.providers.fake_provider import FakeAIProvider
+from app.services.prompt_registry import PromptRegistry
 
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "fake_ai_responses.json"
@@ -77,6 +78,16 @@ def _summary_request() -> AIRequest:
     )
 
 
+def _provider(fixture_name: str) -> FakeAIProvider:
+    registry = PromptRegistry()
+    return FakeAIProvider.from_file(
+        FIXTURE_PATH,
+        fixture_name,
+        prompt_resolver=registry.resolve_content,
+        prompt_bundle_validator=registry.validate_bundle,
+    )
+
+
 def test_valid_complete_output_fixture_matches_composition_schema() -> None:
     fixture_bank = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
     raw_response = fixture_bank["valid_complete_output"]["raw_response"]
@@ -87,7 +98,7 @@ def test_valid_complete_output_fixture_matches_composition_schema() -> None:
 
 
 def test_fake_provider_is_deterministic_and_returns_audited_typed_result() -> None:
-    provider = FakeAIProvider.from_file(FIXTURE_PATH, "valid_summary")
+    provider = _provider("valid_summary")
     request = _summary_request()
 
     first_result = provider.generate(request)
@@ -121,7 +132,7 @@ def test_fake_provider_validates_response_fixtures_locally(
     expected_category: AIFailureCategory,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    provider = FakeAIProvider.from_file(FIXTURE_PATH, fixture_name)
+    provider = _provider(fixture_name)
 
     with pytest.raises(AIProviderExecutionError) as error_info:
         provider.generate(_summary_request())
@@ -151,7 +162,7 @@ def test_fake_provider_exposes_safe_simulated_failures(
     fixture_name: str,
     expected_category: AIFailureCategory,
 ) -> None:
-    provider = FakeAIProvider.from_file(FIXTURE_PATH, fixture_name)
+    provider = _provider(fixture_name)
 
     with pytest.raises(AIProviderExecutionError) as error_info:
         provider.generate(_summary_request())
@@ -165,10 +176,7 @@ def test_fake_provider_exposes_safe_simulated_failures(
 
 
 def test_fake_provider_rejects_unknown_output_schema_before_fixture_execution() -> None:
-    provider = FakeAIProvider.from_file(
-        FIXTURE_PATH,
-        "simulated_recoverable_failure",
-    )
+    provider = _provider("simulated_recoverable_failure")
     request = _summary_request().model_copy(
         update={"output_schema": "unregistered-output-v1"}
     )
@@ -185,12 +193,39 @@ def test_fake_provider_rejects_unknown_output_schema_before_fixture_execution() 
     assert "unregistered-output-v1" not in repr(error)
 
 
+def test_fake_provider_rejects_task_prompt_for_wrong_stage_before_fixture() -> None:
+    provider = _provider("simulated_recoverable_failure")
+    request = _summary_request().model_copy(
+        update={
+            "prompts": PromptBundle(
+                system=PromptReference(
+                    name=PromptName.SYSTEM,
+                    version=PromptVersion.V1,
+                ),
+                task=PromptReference(
+                    name=PromptName.TIMELINE,
+                    version=PromptVersion.V1,
+                ),
+            )
+        }
+    )
+
+    with pytest.raises(AIProviderExecutionError) as error_info:
+        provider.generate(request)
+
+    error = error_info.value
+    assert error.details.category is AIFailureCategory.UNKNOWN_PROMPT
+    assert error.details.audit is not None
+    assert error.details.audit.attempt_count == 1
+    assert error.details.audit.raw_response is None
+
+
 def test_fake_provider_requires_no_gemini_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("GEMINI_MODEL", raising=False)
-    provider = FakeAIProvider.from_file(FIXTURE_PATH, "valid_summary")
+    provider = _provider("valid_summary")
 
     result = provider.generate(_summary_request())
 

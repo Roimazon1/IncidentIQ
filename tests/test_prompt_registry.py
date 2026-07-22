@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 
@@ -16,6 +15,7 @@ from app.schemas.ai_provider import (
     PromptReference,
     PromptVersion,
 )
+from app.services.ai_provider import PromptBundleValidator, PromptResolver
 from app.services.prompt_registry import (
     PromptRegistry,
     PromptRegistryError,
@@ -105,9 +105,16 @@ def test_content_resolver_returns_validated_prompt_content() -> None:
         name=PromptName.SUMMARY,
         version=PromptVersion.V1,
     )
-    resolver: Callable[[PromptReference], str] = registry.resolve_content
+    resolver: PromptResolver = registry.resolve_content
 
     assert resolver(reference) == registry.resolve(reference).content
+
+
+def test_bundle_validator_is_directly_compatible_with_provider_boundary() -> None:
+    registry = PromptRegistry()
+    validator: PromptBundleValidator = registry.validate_bundle
+
+    validator(_bundle(), AnalysisStage.SUMMARY)
 
 
 def test_content_resolver_rejects_unknown_prompt_safely() -> None:

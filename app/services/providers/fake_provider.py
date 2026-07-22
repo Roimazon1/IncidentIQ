@@ -22,9 +22,12 @@ from app.schemas.ai_provider import (
 )
 from app.services.ai_provider import (
     AIProviderConfigurationError,
+    PromptBundleValidator,
+    PromptResolver,
     build_ai_result,
     process_structured_response,
     raise_ai_provider_failure,
+    resolve_request_prompts,
     select_output_model,
 )
 
@@ -65,11 +68,26 @@ class FakeAIProvider:
     provider_name = "fake"
     model_name = "fixture-v1"
 
-    def __init__(self, fixture: _FakeResponseFixture) -> None:
+    def __init__(
+        self,
+        fixture: _FakeResponseFixture,
+        *,
+        prompt_resolver: PromptResolver,
+        prompt_bundle_validator: PromptBundleValidator,
+    ) -> None:
         self._fixture = fixture
+        self._prompt_resolver = prompt_resolver
+        self._prompt_bundle_validator = prompt_bundle_validator
 
     @classmethod
-    def from_file(cls, path: Path, fixture_name: str) -> Self:
+    def from_file(
+        cls,
+        path: Path,
+        fixture_name: str,
+        *,
+        prompt_resolver: PromptResolver,
+        prompt_bundle_validator: PromptBundleValidator,
+    ) -> Self:
         """Load and validate a named fixture without environment or network access."""
         try:
             fixture_document = json.loads(path.read_text(encoding="utf-8"))
@@ -84,11 +102,20 @@ class FakeAIProvider:
             raise AIProviderConfigurationError(
                 "The requested fake AI response fixture is not registered."
             )
-        return cls(fixture)
+        return cls(
+            fixture,
+            prompt_resolver=prompt_resolver,
+            prompt_bundle_validator=prompt_bundle_validator,
+        )
 
     def generate(self, request: AIRequest) -> AIResult[AIOutput]:
         """Parse and validate the configured fixture as the requested output type."""
         output_model = select_output_model(request)
+        resolve_request_prompts(
+            request,
+            prompt_resolver=self._prompt_resolver,
+            prompt_bundle_validator=self._prompt_bundle_validator,
+        )
         fixture = self._fixture
         if fixture.failure_category is not None:
             raise_ai_provider_failure(
