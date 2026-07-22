@@ -393,6 +393,8 @@ class GeminiAIProvider:
         }
         if request.critic_context is not None:
             payload["critic_context"] = request.critic_context.model_dump(mode="json")
+        if request.bias_context is not None:
+            payload["bias_context"] = request.bias_context.model_dump(mode="json")
         return json.dumps(payload, separators=(",", ":"), sort_keys=True)
 
     @staticmethod

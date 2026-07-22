@@ -3,12 +3,25 @@
 import re
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
-from enum import StrEnum
 
 from pydantic import BaseModel
 
 from app.models import ClaimSupportStatus
-from app.schemas.ai_outputs import EvidenceReferenceV1
+from app.schemas.ai_outputs import (
+    EvidenceReferenceV1,
+    HypothesesOutputV1,
+    SummaryOutputV1,
+    TimelineOutputV1,
+)
+from app.schemas.ai_provider import (
+    EvidenceReferenceValidationStatus,
+    ValidatedAnalysisViewV1,
+    ValidatedEvidenceReferenceV1,
+    ValidatedFactV1,
+    ValidatedHypothesisEvidenceV1,
+    ValidatedHypothesisV1,
+    ValidatedTimelineEventV1,
+)
 from app.schemas.evidence import (
     EvidenceCode,
     EvidenceManifest,
@@ -21,15 +34,6 @@ from app.services.preprocessing_service import PreprocessingService
 _NUMBERED_LINE_PATTERN = re.compile(r"^L(?P<number>\d+):(?: (?P<content>.*))?$")
 INFERRED_TIMELINE_CONFIDENCE_CAP = 70
 VALID_CONTRADICTION_CONFIDENCE_PENALTY = 10
-
-
-class EvidenceReferenceValidationStatus(StrEnum):
-    """Deterministic citation checks, distinct from claim-support classification."""
-
-    VALID = "valid"
-    UNKNOWN_EVIDENCE_ID = "unknown_evidence_id"
-    INVALID_LINE_RANGE = "invalid_line_range"
-    EXCERPT_MISMATCH = "excerpt_mismatch"
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +53,103 @@ class EvidenceReferenceValidationOutcome:
 
 class ValidationService:
     """Validate generated citations against one redacted evidence manifest."""
+
+    @classmethod
+    def build_validated_analysis_view(
+        cls,
+        summary: SummaryOutputV1,
+        timeline: TimelineOutputV1,
+        hypotheses: HypothesesOutputV1,
+        evidence_manifest: EvidenceManifest,
+    ) -> ValidatedAnalysisViewV1:
+        """Build the single deterministic view used by bias and persistence."""
+        validated_facts: list[ValidatedFactV1] = []
+        for fact in summary.facts:
+            evidence = tuple(
+                cls._validated_reference(reference, evidence_manifest)
+                for reference in fact.evidence
+            )
+            validated_facts.append(
+                ValidatedFactV1(
+                    claim=fact.claim,
+                    confidence=fact.confidence,
+                    support_status=cls.classify_claim_support(
+                        cls._reference_outcomes(evidence)
+                    ),
+                    evidence=evidence,
+                )
+            )
+
+        validated_timeline = tuple(
+            ValidatedTimelineEventV1(
+                timestamp=event.timestamp,
+                description=event.description,
+                evidence=tuple(
+                    cls._validated_reference(reference, evidence_manifest)
+                    for reference in event.evidence
+                ),
+                is_inferred=event.is_inferred,
+                persisted_confidence=cls.apply_inferred_timeline_confidence_cap(
+                    event.confidence,
+                    event.is_inferred,
+                ),
+                uncertainty_explanation=event.uncertainty_explanation,
+            )
+            for event in timeline.events
+        )
+
+        validated_hypotheses: list[ValidatedHypothesisV1] = []
+        for hypothesis in hypotheses.hypotheses:
+            supporting_evidence = tuple(
+                ValidatedHypothesisEvidenceV1(
+                    reference=cls._validated_reference(
+                        evidence.reference,
+                        evidence_manifest,
+                    ),
+                    relevance=evidence.relevance,
+                )
+                for evidence in hypothesis.supporting_evidence
+            )
+            contradicting_evidence = tuple(
+                ValidatedHypothesisEvidenceV1(
+                    reference=cls._validated_reference(
+                        evidence.reference,
+                        evidence_manifest,
+                    ),
+                    relevance=evidence.relevance,
+                )
+                for evidence in hypothesis.contradicting_evidence
+            )
+            validated_hypotheses.append(
+                ValidatedHypothesisV1(
+                    hypothesis_id=hypothesis.hypothesis_id,
+                    rank=hypothesis.rank,
+                    title=hypothesis.title,
+                    explanation=hypothesis.explanation,
+                    adjusted_confidence=(
+                        cls.adjust_hypothesis_confidence_for_contradictions(
+                            hypothesis.confidence,
+                            cls._reference_outcomes(
+                                tuple(
+                                    evidence.reference
+                                    for evidence in contradicting_evidence
+                                )
+                            ),
+                        )
+                    ),
+                    supporting_evidence=supporting_evidence,
+                    contradicting_evidence=contradicting_evidence,
+                    missing_evidence=hypothesis.missing_evidence,
+                    validation_test=hypothesis.validation_test,
+                    risk_of_acting=hypothesis.risk_of_acting,
+                )
+            )
+
+        return ValidatedAnalysisViewV1(
+            facts=tuple(validated_facts),
+            timeline=validated_timeline,
+            hypotheses=tuple(validated_hypotheses),
+        )
 
     @classmethod
     def validate_output_references(
@@ -158,6 +259,33 @@ class ValidationService:
         }
         adjustment = len(valid_references) * VALID_CONTRADICTION_CONFIDENCE_PENALTY
         return max(0, confidence - adjustment)
+
+    @classmethod
+    def _validated_reference(
+        cls,
+        reference: EvidenceReferenceV1,
+        evidence_manifest: EvidenceManifest,
+    ) -> ValidatedEvidenceReferenceV1:
+        outcome = cls.validate_supporting_excerpt(reference, evidence_manifest)
+        return ValidatedEvidenceReferenceV1(
+            reference=reference,
+            status=outcome.status,
+            message=outcome.message,
+        )
+
+    @staticmethod
+    def _reference_outcomes(
+        references: tuple[ValidatedEvidenceReferenceV1, ...],
+    ) -> tuple[EvidenceReferenceValidationOutcome, ...]:
+        return tuple(
+            EvidenceReferenceValidationOutcome(
+                evidence_id=item.reference.evidence_id,
+                line_range=item.reference.line_range,
+                status=item.status,
+                message=item.message,
+            )
+            for item in references
+        )
 
     @staticmethod
     def _outcome(

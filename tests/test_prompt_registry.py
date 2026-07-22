@@ -255,6 +255,19 @@ def test_stage_prompts_use_their_declared_uncertainty_fields() -> None:
     assert "additional uncertainty field" in hypotheses
     assert "confidence" in bias
     assert "additional uncertainty field" in bias
+    assert "validated_analysis as authoritative" in bias
+    assert "original_analysis" in bias
+    assert all(
+        risk_name in bias
+        for risk_name in (
+            "confirmation bias",
+            "anchoring bias",
+            "automation bias",
+            "post hoc fallacy",
+            "overconfidence bias",
+        )
+    )
+    assert "possible warning, not an accusation" in bias
 
 
 def test_application_code_does_not_load_prompt_files_outside_registry() -> None:

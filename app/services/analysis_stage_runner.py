@@ -8,11 +8,16 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import AnalysisRun, EvidenceItem
-from app.schemas.ai_outputs import AIOutput, HypothesesOutputV1
+from app.schemas.ai_outputs import (
+    AIOutput,
+    HypothesesOutputV1,
+    ReasoningRisksOutputV1,
+)
 from app.schemas.ai_provider import (
     AIRequest,
     AIResult,
     AnalysisStage,
+    BiasContextV1,
     CriticContextV1,
     OutputSchemaIdentifier,
     PromptBundle,
@@ -23,6 +28,7 @@ from app.schemas.ai_provider import (
 )
 from app.schemas.evidence import EvidenceManifest, EvidenceManifestSource
 from app.services.ai_provider import AIProvider
+from app.services.bias_service import BiasAnalysisError, BiasService
 from app.services.evidence_manifest_service import EvidenceManifestService
 from app.services.validation_service import ValidationService
 
@@ -105,10 +111,13 @@ class AnalysisStageRunner:
         output_schema: OutputSchemaIdentifier,
         output_type: type[StageOutputT],
         critic_context: CriticContextV1 | None = None,
+        bias_context: BiasContextV1 | None = None,
     ) -> AIResult[StageOutputT]:
         """Execute one typed stage and enforce exact request/result traceability."""
         if critic_context is not None:
             self._validate_critic_context(critic_context, evidence_manifest)
+        if bias_context is not None:
+            self._validate_bias_context(bias_context, evidence_manifest)
         request = self._build_stage_request(
             analysis_run,
             evidence_manifest,
@@ -116,6 +125,7 @@ class AnalysisStageRunner:
             analysis_stage=analysis_stage,
             output_schema=output_schema,
             critic_context=critic_context,
+            bias_context=bias_context,
         )
         result = self._require_ai_provider().generate(request)
         typed_result = self._validate_stage_result(
@@ -147,6 +157,21 @@ class AnalysisStageRunner:
                 raw_response=raw_response,
             )
 
+    @staticmethod
+    def require_required_reasoning_risks(
+        output: ReasoningRisksOutputV1,
+        *,
+        raw_response: str | None = None,
+    ) -> None:
+        """Require every locked core reasoning-risk warning category."""
+        try:
+            BiasService.identify_risks(output)
+        except BiasAnalysisError as exc:
+            raise AnalysisStageOutputError(
+                str(exc),
+                raw_response=raw_response,
+            ) from exc
+
     def _require_ai_provider(self) -> AIProvider:
         if self._ai_provider is None:
             raise AnalysisProviderRequiredError(
@@ -168,6 +193,31 @@ class AnalysisStageRunner:
                 initial_output,
                 evidence_manifest,
             )
+
+    @classmethod
+    def _validate_bias_context(
+        cls,
+        bias_context: BiasContextV1,
+        evidence_manifest: EvidenceManifest,
+    ) -> None:
+        cls._validate_critic_context(
+            bias_context.original_analysis,
+            evidence_manifest,
+        )
+        expected_validated_analysis = ValidationService.build_validated_analysis_view(
+            bias_context.original_analysis.summary,
+            bias_context.original_analysis.timeline,
+            bias_context.original_analysis.hypotheses,
+            evidence_manifest,
+        )
+        if bias_context.validated_analysis != expected_validated_analysis:
+            raise AnalysisStageOutputError(
+                "The bias request contains inconsistent deterministic validation data."
+            )
+        ValidationService.validate_output_references(
+            bias_context.critic,
+            evidence_manifest,
+        )
 
     @staticmethod
     def _validate_stage_result(
@@ -208,6 +258,7 @@ class AnalysisStageRunner:
         analysis_stage: AnalysisStage,
         output_schema: OutputSchemaIdentifier,
         critic_context: CriticContextV1 | None = None,
+        bias_context: BiasContextV1 | None = None,
     ) -> AIRequest:
         manifest_checksum = sha256(
             evidence_manifest.model_dump_json().encode("utf-8")
@@ -226,6 +277,7 @@ class AnalysisStageRunner:
             ),
             output_schema=output_schema,
             critic_context=critic_context,
+            bias_context=bias_context,
             metadata=SafeAIMetadata(
                 request_identifier=(
                     f"analysis-run-{analysis_run.id}-{analysis_stage.value}"

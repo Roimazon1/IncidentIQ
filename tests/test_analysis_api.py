@@ -44,6 +44,7 @@ CORE_FIXTURES = (
     "valid_timeline",
     "valid_hypotheses",
     "valid_critic",
+    "valid_bias",
 )
 
 
@@ -235,6 +236,14 @@ def test_fake_analysis_can_be_run_and_reopened_without_exposing_raw_audit(
     assert "does not change the" in detail_response.text
     assert "original hypothesis ranking" in detail_response.text
     assert "critic confidence 35%" in detail_response.text
+    assert "Reasoning risks and fallacies" in detail_response.text
+    assert "possible risks to investigate, not accusations" in detail_response.text
+    assert "Confirmation bias" in detail_response.text
+    assert "Anchoring bias" in detail_response.text
+    assert "Automation bias" in detail_response.text
+    assert "Post hoc fallacy" in detail_response.text
+    assert "Overconfidence bias" in detail_response.text
+    assert "Actively seek evidence that would weaken" in detail_response.text
     assert "fake / fixture-v1" in detail_response.text
     assert "summary v1" in detail_response.text
     assert "E-001" in detail_response.text
@@ -251,6 +260,7 @@ def test_fake_analysis_can_be_run_and_reopened_without_exposing_raw_audit(
                 selectinload(AnalysisRun.facts),
                 selectinload(AnalysisRun.timeline_events),
                 selectinload(AnalysisRun.hypotheses),
+                selectinload(AnalysisRun.bias_flags),
             )
             .where(AnalysisRun.id == 1)
         )
@@ -261,6 +271,7 @@ def test_fake_analysis_can_be_run_and_reopened_without_exposing_raw_audit(
         assert persisted_run.facts[0].support_status is ClaimSupportStatus.SUPPORTED
         assert len(persisted_run.timeline_events) == 2
         assert len(persisted_run.hypotheses) == 3
+        assert len(persisted_run.bias_flags) == 5
         assert [
             (hypothesis.rank, hypothesis.title, hypothesis.confidence)
             for hypothesis in persisted_run.hypotheses

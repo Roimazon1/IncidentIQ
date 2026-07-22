@@ -34,6 +34,7 @@ from app.schemas.ai_provider import (
     AIResult,
     AIResultMetadata,
     AnalysisStage,
+    BiasContextV1,
     CriticContextV1,
     FailureAuditData,
     OutputSchemaIdentifier,
@@ -50,6 +51,7 @@ from app.schemas.evidence import (
     EvidenceManifestItem,
     EvidenceManifestTimestamp,
 )
+from app.services.validation_service import ValidationService
 
 
 def _manifest() -> EvidenceManifest:
@@ -307,6 +309,64 @@ def test_non_critic_request_rejects_critic_context() -> None:
             output_schema=OutputSchemaIdentifier.SUMMARY_V1,
             metadata=_metadata(),
             critic_context=_critic_context(),
+        )
+
+
+def test_bias_request_requires_typed_analysis_and_critic_context() -> None:
+    hypotheses = (_hypothesis(1), _hypothesis(2), _hypothesis(3))
+    critic = _complete_analysis_for_ranking(hypotheses).critic
+    original_analysis = _critic_context()
+    bias_context = BiasContextV1(
+        original_analysis=original_analysis,
+        validated_analysis=ValidationService.build_validated_analysis_view(
+            original_analysis.summary,
+            original_analysis.timeline,
+            original_analysis.hypotheses,
+            _manifest(),
+        ),
+        critic=critic,
+    )
+
+    request = AIRequest(
+        evidence_manifest=_manifest(),
+        prompts=PromptBundle(
+            system=_prompt_bundle().system,
+            task=PromptReference(name=PromptName.BIAS, version=PromptVersion.V1),
+        ),
+        output_schema=OutputSchemaIdentifier.REASONING_RISKS_V1,
+        metadata=SafeAIMetadata(
+            request_identifier="req-bias",
+            incident_public_identifier="INC-000001",
+            analysis_stage=AnalysisStage.BIAS,
+        ),
+        bias_context=bias_context,
+    )
+
+    serialized = request.model_dump_json()
+
+    assert request.bias_context == bias_context
+    assert '"bias_context"' in serialized
+    assert '"raw_response"' not in serialized
+    assert '"audit"' not in serialized
+
+
+def test_bias_request_rejects_missing_analysis_context() -> None:
+    with pytest.raises(ValidationError, match="bias requests require"):
+        AIRequest(
+            evidence_manifest=_manifest(),
+            prompts=PromptBundle(
+                system=_prompt_bundle().system,
+                task=PromptReference(
+                    name=PromptName.BIAS,
+                    version=PromptVersion.V1,
+                ),
+            ),
+            output_schema=OutputSchemaIdentifier.REASONING_RISKS_V1,
+            metadata=SafeAIMetadata(
+                request_identifier="req-bias",
+                incident_public_identifier="INC-000001",
+                analysis_stage=AnalysisStage.BIAS,
+            ),
         )
 
 

@@ -155,6 +155,7 @@ def _recording_core_provider(
         OutputSchemaIdentifier.TIMELINE_V1: _fixture_provider(timeline_fixture),
         OutputSchemaIdentifier.HYPOTHESES_V1: _fixture_provider("valid_hypotheses"),
         OutputSchemaIdentifier.CRITIC_V1: _fixture_provider("valid_critic"),
+        OutputSchemaIdentifier.REASONING_RISKS_V1: _fixture_provider("valid_bias"),
     }
 
     def generate(request: AIRequest) -> AIResult[AIOutput]:
@@ -851,6 +852,7 @@ def test_core_analysis_persists_all_validated_outputs_and_audit_data(
                 selectinload(AnalysisRun.facts),
                 selectinload(AnalysisRun.timeline_events),
                 selectinload(AnalysisRun.hypotheses),
+                selectinload(AnalysisRun.bias_flags),
             )
             .where(AnalysisRun.id == run_id)
         )
@@ -862,6 +864,7 @@ def test_core_analysis_persists_all_validated_outputs_and_audit_data(
         assert persisted_run.provider_name == "fake"
         assert persisted_run.model_name == "fixture-v1"
         assert persisted_run.prompt_versions == {
+            "bias": "v1",
             "critic": "v1",
             "system": "v1",
             "summary": "v1",
@@ -872,7 +875,13 @@ def test_core_analysis_persists_all_validated_outputs_and_audit_data(
         assert persisted_run.raw_response is not None
         audit_envelope = json.loads(persisted_run.raw_response)
         stages = audit_envelope["stages"]
-        assert set(stages) == {"summary", "timeline", "hypotheses", "critic"}
+        assert set(stages) == {
+            "summary",
+            "timeline",
+            "hypotheses",
+            "critic",
+            "bias",
+        }
 
         fixture_bank = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
         for stage_name, fixture_name in (
@@ -880,6 +889,7 @@ def test_core_analysis_persists_all_validated_outputs_and_audit_data(
             ("timeline", "valid_timeline"),
             ("hypotheses", "valid_hypotheses"),
             ("critic", "valid_critic"),
+            ("bias", "valid_bias"),
         ):
             assert (
                 stages[stage_name]["raw_response"]
@@ -921,12 +931,20 @@ def test_core_analysis_persists_all_validated_outputs_and_audit_data(
             2,
             3,
         ]
+        assert {risk.bias_type for risk in persisted_run.bias_flags} == {
+            "Confirmation bias",
+            "Anchoring bias",
+            "Automation bias",
+            "Post hoc fallacy",
+            "Overconfidence bias",
+        }
 
-    assert len(provider.requests) == 4
+    assert len(provider.requests) == 5
     manifests = [request.evidence_manifest for request in provider.requests]
-    assert manifests[0] is manifests[1] is manifests[2] is manifests[3]
+    assert all(manifest is manifests[0] for manifest in manifests)
     assert all(request.critic_context is None for request in provider.requests[:3])
     assert provider.requests[3].critic_context is not None
+    assert provider.requests[4].bias_context is not None
     assert all(secret not in request.model_dump_json() for request in provider.requests)
 
 
@@ -1172,7 +1190,7 @@ def test_core_analysis_rolls_back_structured_rows_before_failed_audit_persistenc
             service.run_core_analysis(run_id)
 
         assert completed_flush_failed is True
-        assert len(provider.requests) == 4
+        assert len(provider.requests) == 5
         assert str(error_info.value) == (
             "The completed analysis results could not be saved."
         )
@@ -1182,6 +1200,7 @@ def test_core_analysis_rolls_back_structured_rows_before_failed_audit_persistenc
             "valid_timeline",
             "valid_hypotheses",
             "valid_critic",
+            "valid_bias",
         ):
             raw_response = fixture_bank[fixture_name]["raw_response"]
             assert raw_response not in str(error_info.value)
@@ -1194,6 +1213,7 @@ def test_core_analysis_rolls_back_structured_rows_before_failed_audit_persistenc
                 selectinload(AnalysisRun.facts),
                 selectinload(AnalysisRun.timeline_events),
                 selectinload(AnalysisRun.hypotheses),
+                selectinload(AnalysisRun.bias_flags),
             )
             .where(AnalysisRun.id == run_id)
         )
@@ -1206,7 +1226,9 @@ def test_core_analysis_rolls_back_structured_rows_before_failed_audit_persistenc
         assert persisted_run.facts == []
         assert persisted_run.timeline_events == []
         assert persisted_run.hypotheses == []
+        assert persisted_run.bias_flags == []
         assert persisted_run.prompt_versions == {
+            "bias": "v1",
             "critic": "v1",
             "system": "v1",
             "summary": "v1",
@@ -1216,12 +1238,19 @@ def test_core_analysis_rolls_back_structured_rows_before_failed_audit_persistenc
         assert persisted_run.input_evidence_codes == ["E-001"]
         assert persisted_run.raw_response is not None
         stages = json.loads(persisted_run.raw_response)["stages"]
-        assert set(stages) == {"summary", "timeline", "hypotheses", "critic"}
+        assert set(stages) == {
+            "summary",
+            "timeline",
+            "hypotheses",
+            "critic",
+            "bias",
+        }
         for stage_name, fixture_name in (
             ("summary", "valid_summary"),
             ("timeline", "valid_timeline"),
             ("hypotheses", "valid_hypotheses"),
             ("critic", "valid_critic"),
+            ("bias", "valid_bias"),
         ):
             assert (
                 stages[stage_name]["raw_response"]

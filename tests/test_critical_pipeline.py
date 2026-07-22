@@ -9,13 +9,27 @@ from sqlalchemy.orm import Session, selectinload, sessionmaker
 from app.models import (
     AnalysisRun,
     AnalysisRunStatus,
+    ClaimSupportStatus,
     EvidenceItem,
     EvidenceType,
     Incident,
     IncidentStatus,
 )
-from app.schemas.ai_outputs import AIOutput, CriticOutputV1, HypothesesOutputV1
-from app.schemas.ai_provider import AIRequest, AIResult, AnalysisStage
+from app.schemas.ai_outputs import (
+    AIOutput,
+    CriticOutputV1,
+    HypothesesOutputV1,
+    ReasoningRisksOutputV1,
+    SummaryOutputV1,
+    TimelineOutputV1,
+)
+from app.schemas.ai_provider import (
+    AIRequest,
+    AIResult,
+    AnalysisStage,
+    EvidenceReferenceValidationStatus,
+    SuccessAuditData,
+)
 from app.services.analysis_service import AnalysisService
 from app.services.prompt_registry import PromptRegistry
 from app.services.providers.fake_provider import FakeAIProvider
@@ -27,6 +41,7 @@ CORE_FIXTURES = (
     "valid_timeline",
     "valid_hypotheses",
     "valid_critic",
+    "valid_bias",
 )
 
 
@@ -38,9 +53,11 @@ class RecordingFakeProvider:
         provider: FakeAIProvider,
         *,
         replacement_top_hypothesis: str | None = None,
+        validation_scenario: bool = False,
     ) -> None:
         self._provider = provider
         self._replacement_top_hypothesis = replacement_top_hypothesis
+        self._validation_scenario = validation_scenario
         self.requests: list[AIRequest] = []
 
     def generate(self, request: AIRequest) -> AIResult[AIOutput]:
@@ -58,12 +75,58 @@ class RecordingFakeProvider:
                 metadata=result.metadata,
                 audit=result.audit,
             )
+        if self._validation_scenario:
+            output = self._validation_scenario_output(request, result.output)
+            if output is not result.output:
+                return AIResult[AIOutput](
+                    output=output,
+                    metadata=result.metadata,
+                    audit=SuccessAuditData(raw_response=output.model_dump_json()),
+                )
         return result
+
+    @staticmethod
+    def _validation_scenario_output(
+        request: AIRequest,
+        output: AIOutput,
+    ) -> AIOutput:
+        output_data = output.model_dump()
+        if request.metadata.analysis_stage is AnalysisStage.SUMMARY:
+            assert isinstance(output, SummaryOutputV1)
+            output_data["facts"][0]["evidence"][0]["evidence_id"] = "E-999"
+            return SummaryOutputV1.model_validate(output_data)
+        if request.metadata.analysis_stage is AnalysisStage.TIMELINE:
+            assert isinstance(output, TimelineOutputV1)
+            output_data["events"][1]["confidence"] = 95
+            return TimelineOutputV1.model_validate(output_data)
+        if request.metadata.analysis_stage is AnalysisStage.HYPOTHESES:
+            assert isinstance(output, HypothesesOutputV1)
+            output_data["hypotheses"][0]["contradicting_evidence"] = [
+                {
+                    "reference": {
+                        "evidence_id": "E-001",
+                        "line_range": "1-2",
+                    },
+                    "relevance": "The captured failure may have another cause.",
+                }
+            ]
+            output_data["hypotheses"][1]["contradicting_evidence"] = [
+                {
+                    "reference": {
+                        "evidence_id": "E-999",
+                        "line_range": "1",
+                    },
+                    "relevance": "This generated reference is invalid.",
+                }
+            ]
+            return HypothesesOutputV1.model_validate(output_data)
+        return output
 
 
 def _recording_provider(
     *,
     replacement_top_hypothesis: str | None = None,
+    validation_scenario: bool = False,
 ) -> RecordingFakeProvider:
     registry = PromptRegistry()
     fake_provider = FakeAIProvider.from_file_set(
@@ -75,6 +138,7 @@ def _recording_provider(
     return RecordingFakeProvider(
         fake_provider,
         replacement_top_hypothesis=replacement_top_hypothesis,
+        validation_scenario=validation_scenario,
     )
 
 
@@ -120,7 +184,10 @@ def test_critic_challenges_top_hypothesis_without_mutating_original_results(
         session.expire_all()
         persisted_run = session.scalar(
             select(AnalysisRun)
-            .options(selectinload(AnalysisRun.hypotheses))
+            .options(
+                selectinload(AnalysisRun.hypotheses),
+                selectinload(AnalysisRun.bias_flags),
+            )
             .where(AnalysisRun.id == analysis_run.id)
         )
 
@@ -150,15 +217,28 @@ def test_critic_challenges_top_hypothesis_without_mutating_original_results(
             "version": "v1",
         }
         assert critic_record["metadata"]["output_schema"] == "critic_v1"
+        bias_record = audit_envelope["stages"][AnalysisStage.BIAS.value]
+        bias_output = ReasoningRisksOutputV1.model_validate(
+            bias_record["parsed_output"]
+        )
+        assert len(bias_output.risks) == 5
+        assert len(persisted_run.bias_flags) == 5
+        assert bias_record["metadata"]["analysis_stage"] == "bias"
+        assert bias_record["metadata"]["task_prompt"] == {
+            "name": "bias",
+            "version": "v1",
+        }
+        assert bias_record["metadata"]["output_schema"] == "reasoning_risks_v1"
 
     assert [request.metadata.analysis_stage for request in provider.requests] == [
         AnalysisStage.SUMMARY,
         AnalysisStage.TIMELINE,
         AnalysisStage.HYPOTHESES,
         AnalysisStage.CRITIC,
+        AnalysisStage.BIAS,
     ]
     manifests = [request.evidence_manifest for request in provider.requests]
-    assert manifests[0] is manifests[1] is manifests[2] is manifests[3]
+    assert all(manifest is manifests[0] for manifest in manifests)
     assert all(request.critic_context is None for request in provider.requests[:3])
     critic_request = provider.requests[3]
     assert critic_request.critic_context is not None
@@ -169,6 +249,15 @@ def test_critic_challenges_top_hypothesis_without_mutating_original_results(
         "The checkout log records a failed request."
     )
     assert critic_request.critic_context.hypotheses.hypotheses[0].title == (
+        "Database connection pool exhaustion"
+    )
+    bias_request = provider.requests[4]
+    assert bias_request.bias_context is not None
+    assert bias_request.bias_context.original_analysis == critic_request.critic_context
+    assert bias_request.bias_context.validated_analysis.facts[0].support_status is (
+        ClaimSupportStatus.SUPPORTED
+    )
+    assert bias_request.bias_context.critic.findings[0].affected_claim == (
         "Database connection pool exhaustion"
     )
     assert '"raw_response"' not in critic_request.model_dump_json()
@@ -215,8 +304,18 @@ def test_changed_top_hypothesis_changes_typed_critic_request_context(
         )
         changed_service.run_core_analysis(changed_run.id)
 
-    original_context = original_provider.requests[-1].critic_context
-    changed_context = changed_provider.requests[-1].critic_context
+    original_critic_request = next(
+        request
+        for request in original_provider.requests
+        if request.metadata.analysis_stage is AnalysisStage.CRITIC
+    )
+    changed_critic_request = next(
+        request
+        for request in changed_provider.requests
+        if request.metadata.analysis_stage is AnalysisStage.CRITIC
+    )
+    original_context = original_critic_request.critic_context
+    changed_context = changed_critic_request.critic_context
 
     assert original_context is not None
     assert changed_context is not None
@@ -225,3 +324,124 @@ def test_changed_top_hypothesis_changes_typed_critic_request_context(
     )
     assert changed_context.hypotheses.hypotheses[0].title == "Cache saturation"
     assert changed_context != original_context
+    changed_bias_request = next(
+        request
+        for request in changed_provider.requests
+        if request.metadata.analysis_stage is AnalysisStage.BIAS
+    )
+    assert changed_bias_request.bias_context is not None
+    assert (
+        changed_bias_request.bias_context.original_analysis.hypotheses.hypotheses[
+            0
+        ].title
+        == "Cache saturation"
+    )
+
+
+def test_bias_receives_the_same_deterministic_view_used_for_persistence(
+    database_session_factory: sessionmaker[Session],
+) -> None:
+    secret = "validated-bias-context-secret"
+    provider = _recording_provider(validation_scenario=True)
+
+    with database_session_factory() as session:
+        incident = _persist_incident(session, "INC-000001", secret)
+        service = AnalysisService(session, ai_provider=provider)
+        analysis_run = service.start_analysis_run(
+            incident.public_id,
+            provider_name="fake",
+            model_name="fixture-v1",
+        )
+
+        service.run_core_analysis(analysis_run.id)
+
+        session.expire_all()
+        persisted_run = session.scalar(
+            select(AnalysisRun)
+            .options(
+                selectinload(AnalysisRun.facts),
+                selectinload(AnalysisRun.timeline_events),
+                selectinload(AnalysisRun.hypotheses),
+            )
+            .where(AnalysisRun.id == analysis_run.id)
+        )
+        assert persisted_run is not None
+        assert persisted_run.status is AnalysisRunStatus.COMPLETED
+        assert persisted_run.facts[0].support_status is ClaimSupportStatus.UNSUPPORTED
+        assert (
+            next(
+                event.confidence
+                for event in persisted_run.timeline_events
+                if event.is_inferred
+            )
+            == 70
+        )
+        persisted_confidence = {
+            hypothesis.rank: hypothesis.confidence
+            for hypothesis in persisted_run.hypotheses
+        }
+        assert persisted_confidence[1] == 50
+        assert persisted_confidence[2] == 45
+
+        audit_envelope = json.loads(persisted_run.raw_response or "")
+        summary_audit = audit_envelope["stages"]["summary"]
+        timeline_audit = audit_envelope["stages"]["timeline"]
+        hypotheses_audit = audit_envelope["stages"]["hypotheses"]
+        assert (
+            summary_audit["parsed_output"]["facts"][0]["evidence"][0]["evidence_id"]
+            == "E-999"
+        )
+        assert timeline_audit["parsed_output"]["events"][1]["confidence"] == 95
+        assert (
+            json.loads(timeline_audit["raw_response"])["events"][1]["confidence"] == 95
+        )
+        assert [
+            hypothesis["confidence"]
+            for hypothesis in hypotheses_audit["parsed_output"]["hypotheses"][:2]
+        ] == [60, 45]
+
+    bias_request = next(
+        request
+        for request in provider.requests
+        if request.metadata.analysis_stage is AnalysisStage.BIAS
+    )
+    context = bias_request.bias_context
+    assert context is not None
+    assert context.original_analysis.summary.facts[0].evidence[0].evidence_id == (
+        "E-999"
+    )
+    assert context.original_analysis.timeline.events[1].confidence == 95
+    assert context.original_analysis.hypotheses.hypotheses[0].confidence == 60
+    assert context.original_analysis.hypotheses.hypotheses[1].confidence == 45
+
+    validated_fact = context.validated_analysis.facts[0]
+    assert validated_fact.support_status is ClaimSupportStatus.UNSUPPORTED
+    assert validated_fact.evidence[0].status is (
+        EvidenceReferenceValidationStatus.UNKNOWN_EVIDENCE_ID
+    )
+    inferred_event = next(
+        event for event in context.validated_analysis.timeline if event.is_inferred
+    )
+    assert inferred_event.persisted_confidence == 70
+    assert inferred_event.uncertainty_explanation == (
+        "Only one captured failure is available, so the start time cannot be "
+        "established."
+    )
+    valid_contradiction = context.validated_analysis.hypotheses[0]
+    assert valid_contradiction.adjusted_confidence == 50
+    assert valid_contradiction.contradicting_evidence[0].reference.status is (
+        EvidenceReferenceValidationStatus.VALID
+    )
+    invalid_contradiction = context.validated_analysis.hypotheses[1]
+    assert invalid_contradiction.adjusted_confidence == 45
+    assert invalid_contradiction.contradicting_evidence[0].reference.status is (
+        EvidenceReferenceValidationStatus.UNKNOWN_EVIDENCE_ID
+    )
+    assert context.critic.findings[0].affected_claim == (
+        "Database connection pool exhaustion"
+    )
+
+    serialized_request = bias_request.model_dump_json()
+    assert secret not in serialized_request
+    assert "raw_response" not in serialized_request
+    assert "audit" not in serialized_request

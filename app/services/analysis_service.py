@@ -20,12 +20,14 @@ from app.models import (
 from app.schemas.ai_outputs import (
     CriticOutputV1,
     HypothesesOutputV1,
+    ReasoningRisksOutputV1,
     SummaryOutputV1,
     TimelineOutputV1,
 )
 from app.schemas.ai_provider import (
     AIResult,
     AnalysisStage,
+    BiasContextV1,
     CriticContextV1,
     OutputSchemaIdentifier,
     PromptName,
@@ -44,6 +46,7 @@ from app.services.analysis_stage_runner import (
     AnalysisStageRunner,
 )
 from app.services.incident_service import IncidentService
+from app.services.validation_service import ValidationService
 
 
 StageOutputT = TypeVar("StageOutputT", bound=BaseModel)
@@ -240,6 +243,17 @@ class AnalysisService:
 
             current_stage = AnalysisStage.CRITIC
             prompt_versions[PromptName.CRITIC.value] = PromptVersion.V1.value
+            initial_analysis_context = CriticContextV1(
+                summary=summary_result.output,
+                timeline=timeline_result.output,
+                hypotheses=hypotheses_result.output,
+            )
+            validated_analysis = ValidationService.build_validated_analysis_view(
+                summary_result.output,
+                timeline_result.output,
+                hypotheses_result.output,
+                evidence_manifest,
+            )
             critic_result = self._stage_runner.execute_stage(
                 analysis_run,
                 evidence_manifest,
@@ -247,14 +261,33 @@ class AnalysisService:
                 analysis_stage=AnalysisStage.CRITIC,
                 output_schema=OutputSchemaIdentifier.CRITIC_V1,
                 output_type=CriticOutputV1,
-                critic_context=CriticContextV1(
-                    summary=summary_result.output,
-                    timeline=timeline_result.output,
-                    hypotheses=hypotheses_result.output,
-                ),
+                critic_context=initial_analysis_context,
             )
             stage_records[AnalysisStage.CRITIC.value] = (
                 self._result_persistence.build_success_stage_record(critic_result)
+            )
+
+            current_stage = AnalysisStage.BIAS
+            prompt_versions[PromptName.BIAS.value] = PromptVersion.V1.value
+            bias_result = self._stage_runner.execute_stage(
+                analysis_run,
+                evidence_manifest,
+                task_prompt=PromptName.BIAS,
+                analysis_stage=AnalysisStage.BIAS,
+                output_schema=OutputSchemaIdentifier.REASONING_RISKS_V1,
+                output_type=ReasoningRisksOutputV1,
+                bias_context=BiasContextV1(
+                    original_analysis=initial_analysis_context,
+                    validated_analysis=validated_analysis,
+                    critic=critic_result.output,
+                ),
+            )
+            self._stage_runner.require_required_reasoning_risks(
+                bias_result.output,
+                raw_response=bias_result.audit.raw_response,
+            )
+            stage_records[AnalysisStage.BIAS.value] = (
+                self._result_persistence.build_success_stage_record(bias_result)
             )
         except AIProviderExecutionError as exc:
             stage_records[current_stage.value] = (
@@ -284,10 +317,8 @@ class AnalysisService:
         try:
             self._result_persistence.persist_completed_analysis(
                 analysis_run,
-                summary_result=summary_result,
-                timeline_result=timeline_result,
-                hypotheses_result=hypotheses_result,
-                evidence_manifest=evidence_manifest,
+                bias_result=bias_result,
+                validated_analysis=validated_analysis,
                 prompt_versions=prompt_versions,
                 input_evidence_codes=input_evidence_codes,
                 stage_records=stage_records,
@@ -332,6 +363,7 @@ class AnalysisService:
                 selectinload(AnalysisRun.facts),
                 selectinload(AnalysisRun.timeline_events),
                 selectinload(AnalysisRun.hypotheses),
+                selectinload(AnalysisRun.bias_flags),
             )
             .where(
                 AnalysisRun.id == run_id,
@@ -420,6 +452,28 @@ class AnalysisService:
             critic_context=critic_context,
         )
 
+    def run_bias_stage(
+        self,
+        run_id: int,
+        *,
+        bias_context: BiasContextV1,
+    ) -> AIResult[ReasoningRisksOutputV1]:
+        """Generate typed possible reasoning risks from validated analysis context."""
+        result = self._run_stage(
+            run_id,
+            operation="run reasoning-risk analysis",
+            task_prompt=PromptName.BIAS,
+            analysis_stage=AnalysisStage.BIAS,
+            output_schema=OutputSchemaIdentifier.REASONING_RISKS_V1,
+            output_type=ReasoningRisksOutputV1,
+            bias_context=bias_context,
+        )
+        self._stage_runner.require_required_reasoning_risks(
+            result.output,
+            raw_response=result.audit.raw_response,
+        )
+        return result
+
     def _run_stage(
         self,
         run_id: int,
@@ -430,6 +484,7 @@ class AnalysisService:
         output_schema: OutputSchemaIdentifier,
         output_type: type[StageOutputT],
         critic_context: CriticContextV1 | None = None,
+        bias_context: BiasContextV1 | None = None,
     ) -> AIResult[StageOutputT]:
         analysis_run = self._get_analysis_run_or_raise(run_id)
         self._require_running(analysis_run, operation=operation)
@@ -442,6 +497,7 @@ class AnalysisService:
             output_schema=output_schema,
             output_type=output_type,
             critic_context=critic_context,
+            bias_context=bias_context,
         )
 
     def _persist_failed_analysis(

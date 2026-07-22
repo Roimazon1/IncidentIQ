@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.models import (
     AnalysisRun,
     AnalysisRunStatus,
+    BiasFlag,
     Fact,
     Hypothesis,
     IncidentStatus,
@@ -19,17 +20,21 @@ from app.models import (
 )
 from app.schemas.ai_outputs import (
     CriticOutputV1,
-    FactItemV1,
-    HypothesisV1,
-    HypothesesOutputV1,
+    ReasoningRisksOutputV1,
     SummaryOutputV1,
     TimelineOutputV1,
 )
-from app.schemas.ai_provider import AIResult, AnalysisStage, PromptName
-from app.schemas.evidence import EvidenceManifest
+from app.schemas.ai_provider import (
+    AIResult,
+    AnalysisStage,
+    EvidenceReferenceValidationStatus,
+    PromptName,
+    ValidatedAnalysisViewV1,
+    ValidatedFactV1,
+    ValidatedHypothesisV1,
+)
 from app.services.ai_provider import AIProviderExecutionError
 from app.services.analysis_stage_runner import AnalysisStageOutputError
-from app.services.validation_service import ValidationService
 
 
 StageOutputT = TypeVar("StageOutputT", bound=BaseModel)
@@ -100,10 +105,8 @@ class AnalysisResultPersistence:
         self,
         analysis_run: AnalysisRun,
         *,
-        summary_result: AIResult[SummaryOutputV1],
-        timeline_result: AIResult[TimelineOutputV1],
-        hypotheses_result: AIResult[HypothesesOutputV1],
-        evidence_manifest: EvidenceManifest,
+        bias_result: AIResult[ReasoningRisksOutputV1],
+        validated_analysis: ValidatedAnalysisViewV1,
         prompt_versions: dict[str, str],
         input_evidence_codes: list[str],
         stage_records: dict[str, dict[str, object]],
@@ -113,29 +116,38 @@ class AnalysisResultPersistence:
         analysis_run.input_evidence_codes = list(input_evidence_codes)
         analysis_run.raw_response = self._serialize_stage_records(stage_records)
         analysis_run.facts = [
-            self._build_fact(fact, evidence_manifest)
-            for fact in summary_result.output.facts
+            self._build_fact(fact) for fact in validated_analysis.facts
         ]
         analysis_run.timeline_events = [
             TimelineEvent(
                 event_time=self._parse_timeline_instant(event.timestamp),
                 description=event.description,
                 evidence_codes=list(
-                    dict.fromkeys(reference.evidence_id for reference in event.evidence)
-                ),
-                is_inferred=event.is_inferred,
-                confidence=(
-                    ValidationService.apply_inferred_timeline_confidence_cap(
-                        event.confidence,
-                        event.is_inferred,
+                    dict.fromkeys(
+                        evidence.reference.evidence_id for evidence in event.evidence
                     )
                 ),
+                is_inferred=event.is_inferred,
+                confidence=event.persisted_confidence,
             )
-            for event in timeline_result.output.events
+            for event in validated_analysis.timeline
         ]
         analysis_run.hypotheses = [
-            self._build_hypothesis(hypothesis, evidence_manifest)
-            for hypothesis in hypotheses_result.output.hypotheses
+            self._build_hypothesis(hypothesis)
+            for hypothesis in validated_analysis.hypotheses
+        ]
+        analysis_run.bias_flags = [
+            BiasFlag(
+                bias_type=risk.name,
+                explanation=(
+                    f"Location: {risk.location}\n"
+                    f"Potential effect: {risk.potential_effect}"
+                ),
+                trigger=risk.trigger,
+                mitigation=risk.mitigation,
+                confidence=risk.confidence,
+            )
+            for risk in bias_result.output.risks
         ]
         self.require_complete_core_results(analysis_run)
         self.apply_completed_state(analysis_run)
@@ -146,66 +158,47 @@ class AnalysisResultPersistence:
 
     @staticmethod
     def _build_fact(
-        fact: FactItemV1,
-        evidence_manifest: EvidenceManifest,
+        fact: ValidatedFactV1,
     ) -> Fact:
-        outcomes = ValidationService.validate_output_references(
-            fact,
-            evidence_manifest,
-        )
         supporting_excerpt = next(
             (
-                reference.excerpt
-                for reference, outcome in zip(
-                    fact.evidence,
-                    outcomes,
-                    strict=True,
-                )
-                if outcome.is_valid and reference.excerpt is not None
+                evidence.reference.excerpt
+                for evidence in fact.evidence
+                if evidence.status is EvidenceReferenceValidationStatus.VALID
+                and evidence.reference.excerpt is not None
             ),
             None,
         )
         return Fact(
             claim=fact.claim,
-            support_status=ValidationService.classify_claim_support(outcomes),
+            support_status=fact.support_status,
             confidence=fact.confidence,
             evidence_codes=list(
-                dict.fromkeys(reference.evidence_id for reference in fact.evidence)
+                dict.fromkeys(
+                    evidence.reference.evidence_id for evidence in fact.evidence
+                )
             ),
             supporting_excerpt=supporting_excerpt,
         )
 
     @staticmethod
     def _build_hypothesis(
-        hypothesis: HypothesisV1,
-        evidence_manifest: EvidenceManifest,
+        hypothesis: ValidatedHypothesisV1,
     ) -> Hypothesis:
-        contradiction_outcomes = tuple(
-            ValidationService.validate_supporting_excerpt(
-                evidence.reference,
-                evidence_manifest,
-            )
-            for evidence in hypothesis.contradicting_evidence
-        )
         return Hypothesis(
             rank=hypothesis.rank,
             title=hypothesis.title,
             explanation=hypothesis.explanation,
-            confidence=(
-                ValidationService.adjust_hypothesis_confidence_for_contradictions(
-                    hypothesis.confidence,
-                    contradiction_outcomes,
-                )
-            ),
+            confidence=hypothesis.adjusted_confidence,
             supporting_evidence_codes=list(
                 dict.fromkeys(
-                    evidence.reference.evidence_id
+                    evidence.reference.reference.evidence_id
                     for evidence in hypothesis.supporting_evidence
                 )
             ),
             contradicting_evidence_codes=list(
                 dict.fromkeys(
-                    evidence.reference.evidence_id
+                    evidence.reference.reference.evidence_id
                     for evidence in hypothesis.contradicting_evidence
                 )
             ),
@@ -283,12 +276,14 @@ class AnalysisResultPersistence:
     def require_complete_core_results(analysis_run: AnalysisRun) -> None:
         """Require all core prompts, audits, evidence, and hypotheses before completion."""
         required_stages = {
+            AnalysisStage.BIAS.value,
             AnalysisStage.CRITIC.value,
             AnalysisStage.SUMMARY.value,
             AnalysisStage.TIMELINE.value,
             AnalysisStage.HYPOTHESES.value,
         }
         required_prompts = {
+            PromptName.BIAS.value,
             PromptName.CRITIC.value,
             PromptName.SYSTEM.value,
             PromptName.SUMMARY.value,
@@ -312,6 +307,7 @@ class AnalysisResultPersistence:
             or not analysis_run.input_evidence_codes
             or not stage_records_are_complete
             or len(analysis_run.hypotheses) < 3
+            or len(analysis_run.bias_flags) < 5
         ):
             raise AnalysisRunTransitionError(
                 f"Analysis run {analysis_run.id} cannot transition to COMPLETED "

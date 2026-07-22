@@ -15,6 +15,7 @@ from app.models.enums import EvidenceType
 from app.schemas.ai_outputs import (
     CriticOutputV1,
     HypothesesOutputV1,
+    ReasoningRisksOutputV1,
     SummaryOutputV1,
     TimelineOutputV1,
 )
@@ -22,6 +23,7 @@ from app.schemas.ai_provider import (
     AIFailureCategory,
     AIRequest,
     AnalysisStage,
+    BiasContextV1,
     CriticContextV1,
     OutputSchemaIdentifier,
     PromptBundle,
@@ -48,12 +50,14 @@ from app.services.providers.gemini_provider import (
     GeminiModelsProtocol,
     GeminiResponseProtocol,
 )
+from app.services.validation_service import ValidationService
 
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "fake_ai_responses.json"
 SYSTEM_PROMPT = "Use only the supplied redacted evidence."
 TASK_PROMPT = "Produce a neutral summary with cited facts and explicit uncertainty."
 CRITIC_PROMPT = "Challenge the supplied validated initial analysis."
+BIAS_PROMPT = "Assess possible reasoning risks in the validated analysis."
 
 
 @pytest.fixture(autouse=True)
@@ -147,6 +151,8 @@ def _resolve_prompt(reference: PromptReference) -> str:
         return TASK_PROMPT
     if reference.name is PromptName.CRITIC:
         return CRITIC_PROMPT
+    if reference.name is PromptName.BIAS:
+        return BIAS_PROMPT
     raise LookupError(reference.name)
 
 
@@ -157,6 +163,7 @@ def _validate_prompt_bundle(
     expected_task = {
         AnalysisStage.SUMMARY: PromptName.SUMMARY,
         AnalysisStage.CRITIC: PromptName.CRITIC,
+        AnalysisStage.BIAS: PromptName.BIAS,
     }.get(analysis_stage)
     if (
         bundle.system.name is not PromptName.SYSTEM
@@ -243,6 +250,41 @@ def _critic_request() -> AIRequest:
             ),
             hypotheses=HypothesesOutputV1.model_validate_json(
                 fixture_bank["valid_hypotheses"]["raw_response"]
+            ),
+        ),
+    )
+
+
+def _bias_request() -> AIRequest:
+    fixture_bank = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+    critic_request = _critic_request()
+    assert critic_request.critic_context is not None
+    return AIRequest(
+        evidence_manifest=critic_request.evidence_manifest,
+        prompts=PromptBundle(
+            system=critic_request.prompts.system,
+            task=PromptReference(
+                name=PromptName.BIAS,
+                version=PromptVersion.V1,
+            ),
+        ),
+        output_schema=OutputSchemaIdentifier.REASONING_RISKS_V1,
+        metadata=SafeAIMetadata(
+            request_identifier="req-bias",
+            incident_public_identifier="INC-000001",
+            analysis_stage=AnalysisStage.BIAS,
+            evidence_manifest_checksum="a" * 64,
+        ),
+        bias_context=BiasContextV1(
+            original_analysis=critic_request.critic_context,
+            validated_analysis=ValidationService.build_validated_analysis_view(
+                critic_request.critic_context.summary,
+                critic_request.critic_context.timeline,
+                critic_request.critic_context.hypotheses,
+                critic_request.evidence_manifest,
+            ),
+            critic=CriticOutputV1.model_validate_json(
+                fixture_bank["valid_critic"]["raw_response"]
             ),
         ),
     )
@@ -349,6 +391,31 @@ def test_critic_payload_contains_validated_initial_analysis_without_audit() -> N
         "Database connection pool exhaustion"
     )
     assert "critic_context" not in payload["evidence_manifest"]
+    assert "raw_response" not in client.recorded_models.calls[0]["contents"]
+    assert "audit" not in client.recorded_models.calls[0]["contents"]
+
+
+def test_bias_payload_contains_validated_analysis_and_critic_without_audit() -> None:
+    client = _FakeClient([_FakeResponse(_fixture_response("valid_bias"))])
+    provider = _provider(client)
+
+    result = provider.generate(_bias_request())
+
+    assert isinstance(result.output, ReasoningRisksOutputV1)
+    payload = json.loads(client.recorded_models.calls[0]["contents"])
+    assert payload["task_prompt"] == BIAS_PROMPT
+    assert (
+        payload["bias_context"]["original_analysis"]["summary"]["summary"]["text"]
+        == "Checkout requests are failing."
+    )
+    assert (
+        payload["bias_context"]["validated_analysis"]["facts"][0]["support_status"]
+        == "UNSUPPORTED"
+    )
+    assert payload["bias_context"]["critic"]["findings"][0]["affected_claim"] == (
+        "Database connection pool exhaustion"
+    )
+    assert "bias_context" not in payload["evidence_manifest"]
     assert "raw_response" not in client.recorded_models.calls[0]["contents"]
     assert "audit" not in client.recorded_models.calls[0]["contents"]
 

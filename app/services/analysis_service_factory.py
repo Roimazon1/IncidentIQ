@@ -21,6 +21,7 @@ _CORE_FAKE_FIXTURES = (
     "valid_timeline",
     "valid_hypotheses",
     "valid_critic",
+    "valid_bias",
 )
 
 
