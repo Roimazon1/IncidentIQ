@@ -7,8 +7,11 @@
     <div class="card-body p-4">
       <div class="d-flex flex-wrap justify-content-between align-items-start gap-3">
         <div>
-          <a class="small" href="{{ url_for('incident_detail', public_id=incident.public_id) }}">
-            {{ incident.public_id }}
+          <a
+            class="btn btn-sm btn-outline-secondary mb-2"
+            href="{{ url_for('incident_detail', public_id=incident.public_id) }}"
+          >
+            &larr; Back to incident {{ incident.public_id }}
           </a>
           <h1 class="h3 mb-1" id="analysis-heading">Analysis run {{ analysis_run.id }}</h1>
           <p class="text-body-secondary mb-0">{{ incident.name }}</p>

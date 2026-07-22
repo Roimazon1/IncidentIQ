@@ -15,6 +15,10 @@ def initialize_database(database_engine: Engine) -> None:
     from app import models
 
     models.Incident.metadata.create_all(database_engine)
+    models.running_analysis_per_incident_index.create(
+        bind=database_engine,
+        checkfirst=True,
+    )
 
 
 def main() -> None:

@@ -1,7 +1,7 @@
 """Incident creation, listing, detail, and update routes."""
 
 from datetime import UTC, datetime
-from typing import Annotated
+from typing import Annotated, Literal
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, status
@@ -28,6 +28,7 @@ from app.templating import templates
 router = APIRouter(prefix="/incidents", tags=["incidents"])
 settings = get_settings()
 DatabaseSession = Annotated[Session, Depends(get_db)]
+IncidentDetailTab = Literal["overview", "edit", "history"]
 
 
 class _IncidentFormTimeError(ValueError):
@@ -54,7 +55,8 @@ def _parse_reported_start_time(value: str) -> datetime | None:
     round_trip = utc_datetime.astimezone(display_timezone).replace(tzinfo=None)
     if round_trip != local_datetime:
         raise _IncidentFormTimeError(
-            f"Reported start time does not exist in {settings.display_timezone}."
+            "Approximate start time does not exist because of a "
+            "daylight-saving time change."
         )
     return utc_datetime
 
@@ -89,6 +91,28 @@ def _incident_form_context(
     }
     if incident is not None:
         context["incident"] = incident
+    return context
+
+
+def _incident_detail_context(
+    service: IncidentService,
+    *,
+    incident: Incident,
+    errors: list[str],
+    values: dict[str, str],
+    active_tab: IncidentDetailTab = "overview",
+) -> dict[str, object]:
+    context = _incident_form_context(
+        incident=incident,
+        errors=errors,
+        values=values,
+    )
+    analysis_runs = service.list_analysis_runs(incident.id)
+    context.update(
+        analysis_runs=analysis_runs,
+        analysis_run_count=len(analysis_runs),
+        active_tab=active_tab,
+    )
     return context
 
 
@@ -173,10 +197,12 @@ def incident_detail(
     request: Request,
     public_id: str,
     session: DatabaseSession,
+    tab: Annotated[IncidentDetailTab, Query()] = "overview",
 ) -> HTMLResponse:
     """Render one persisted incident without loading unrelated collections."""
+    service = IncidentService(session)
     try:
-        incident = IncidentService(session).get_incident_or_raise(public_id)
+        incident = service.get_incident_or_raise(public_id)
     except IncidentNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -186,10 +212,12 @@ def incident_detail(
     return templates.TemplateResponse(
         request=request,
         name="incident_detail.html",
-        context=_incident_form_context(
+        context=_incident_detail_context(
+            service,
             incident=incident,
             errors=[],
             values=_incident_form_values(incident),
+            active_tab=tab,
         ),
     )
 
@@ -241,10 +269,12 @@ def update_incident(
         return templates.TemplateResponse(
             request=request,
             name="incident_detail.html",
-            context=_incident_form_context(
+            context=_incident_detail_context(
+                service,
                 incident=incident,
                 errors=errors,
                 values=values,
+                active_tab="edit",
             ),
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         )
@@ -253,17 +283,19 @@ def update_incident(
         return templates.TemplateResponse(
             request=request,
             name="incident_detail.html",
-            context=_incident_form_context(
+            context=_incident_detail_context(
+                service,
                 incident=incident,
                 errors=[str(exc)],
                 values=values,
+                active_tab="edit",
             ),
             status_code=status.HTTP_409_CONFLICT,
         )
 
     return RedirectResponse(
         url=add_success_notice(
-            f"/incidents/{incident.public_id}",
+            f"/incidents/{incident.public_id}?tab=edit",
             SuccessNotice.INCIDENT_UPDATED,
         ),
         status_code=status.HTTP_303_SEE_OTHER,

@@ -5,6 +5,7 @@ from typing import TypeVar
 
 from pydantic import BaseModel
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.models import (
@@ -104,9 +105,14 @@ class AnalysisService:
         model_name: str,
     ) -> AnalysisRun:
         """Create one running analysis for an incident that has evidence."""
+        self._begin_analysis_start_transaction()
         incident = self._incident_service.get_incident_or_raise(incident_public_id)
         self._require_evidence(incident)
-        self._require_no_running_analysis(incident)
+        try:
+            self._require_no_running_analysis(incident)
+        except AnalysisAlreadyRunningError:
+            self.session.rollback()
+            raise
 
         analysis_run = AnalysisRun(
             incident=incident,
@@ -116,10 +122,19 @@ class AnalysisService:
         )
         incident.status = IncidentStatus.ANALYZING
         self.session.add(analysis_run)
-        self._result_persistence.commit(
-            analysis_run,
-            failure_message="The analysis run could not be started.",
-        )
+        try:
+            self._result_persistence.commit(
+                analysis_run,
+                failure_message="The analysis run could not be started.",
+            )
+        except AnalysisPersistenceError as exc:
+            if isinstance(exc.__cause__, IntegrityError) and self._has_running_analysis(
+                incident.id
+            ):
+                raise AnalysisAlreadyRunningError(
+                    f"Incident {incident.public_id} already has a running analysis."
+                ) from exc
+            raise
         return analysis_run
 
     def mark_analysis_run_completed(self, run_id: int) -> AnalysisRun:
@@ -402,18 +417,25 @@ class AnalysisService:
             )
 
     def _require_no_running_analysis(self, incident: Incident) -> None:
+        if self._has_running_analysis(incident.id):
+            raise AnalysisAlreadyRunningError(
+                f"Incident {incident.public_id} already has a running analysis."
+            )
+
+    def _begin_analysis_start_transaction(self) -> None:
+        if self.session.get_bind().dialect.name == "sqlite":
+            self.session.connection().exec_driver_sql("BEGIN IMMEDIATE")
+
+    def _has_running_analysis(self, incident_id: int) -> bool:
         running_run_id = self.session.scalar(
             select(AnalysisRun.id)
             .where(
-                AnalysisRun.incident_id == incident.id,
+                AnalysisRun.incident_id == incident_id,
                 AnalysisRun.status == AnalysisRunStatus.RUNNING,
             )
             .limit(1)
         )
-        if running_run_id is not None:
-            raise AnalysisAlreadyRunningError(
-                f"Incident {incident.public_id} already has a running analysis."
-            )
+        return running_run_id is not None
 
     @staticmethod
     def _require_running(

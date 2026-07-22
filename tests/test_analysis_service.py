@@ -2,8 +2,10 @@
 
 import json
 from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import Barrier
 from unittest.mock import Mock
 
 import pytest
@@ -254,6 +256,42 @@ def test_start_analysis_run_rejects_second_running_run(
 
     assert service_session.scalar(select(func.count(AnalysisRun.id))) == 1
     assert first_run.status is AnalysisRunStatus.RUNNING
+
+
+def test_competing_analysis_starts_create_one_running_run_and_one_safe_conflict(
+    database_session_factory: sessionmaker[Session],
+) -> None:
+    with database_session_factory() as setup_session:
+        incident = _persist_incident(setup_session)
+        public_id = incident.public_id
+
+    start_barrier = Barrier(2)
+
+    def start_competing_run() -> tuple[str, int | str]:
+        with database_session_factory() as session:
+            start_barrier.wait(timeout=5)
+            try:
+                analysis_run = _start_run(AnalysisService(session), public_id)
+            except AnalysisAlreadyRunningError as exc:
+                return "conflict", str(exc)
+            return "started", analysis_run.id
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda _: start_competing_run(), range(2)))
+
+    assert sorted(result[0] for result in results) == ["conflict", "started"]
+    conflict = next(result for result in results if result[0] == "conflict")
+    assert conflict[1] == (f"Incident {public_id} already has a running analysis.")
+    with database_session_factory() as verification_session:
+        running_runs = list(
+            verification_session.scalars(
+                select(AnalysisRun).where(
+                    AnalysisRun.incident.has(public_id=public_id),
+                    AnalysisRun.status == AnalysisRunStatus.RUNNING,
+                )
+            )
+        )
+    assert len(running_runs) == 1
 
 
 def test_mark_analysis_run_completed_rejects_missing_stage_results(

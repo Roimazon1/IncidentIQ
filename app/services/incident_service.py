@@ -1,10 +1,19 @@
 """Incident persistence operations and lifecycle rules."""
 
+from dataclasses import dataclass
+from datetime import datetime
+
 from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.models import EvidenceItem, Incident, IncidentStatus
+from app.models import (
+    AnalysisRun,
+    AnalysisRunStatus,
+    EvidenceItem,
+    Incident,
+    IncidentStatus,
+)
 from app.models.identifiers import (
     INCIDENT_PUBLIC_ID_PREFIX,
     generate_incident_public_id,
@@ -14,6 +23,17 @@ from app.schemas.incident import IncidentCreate, IncidentUpdate
 
 DEFAULT_INCIDENT_LIST_LIMIT = 100
 MAX_INCIDENT_LIST_LIMIT = 100
+
+
+@dataclass(frozen=True, slots=True)
+class AnalysisRunHistoryItem:
+    """Safe summary fields for one incident-scoped analysis history entry."""
+
+    id: int
+    status: AnalysisRunStatus
+    started_at: datetime
+    provider_name: str
+    model_name: str
 
 
 class IncidentNotFoundError(LookupError):
@@ -64,9 +84,7 @@ class IncidentService:
     ) -> list[Incident]:
         """Return a bounded, newest-first page of incidents."""
         if not 1 <= limit <= MAX_INCIDENT_LIST_LIMIT:
-            raise ValueError(
-                f"limit must be between 1 and {MAX_INCIDENT_LIST_LIMIT}"
-            )
+            raise ValueError(f"limit must be between 1 and {MAX_INCIDENT_LIST_LIMIT}")
         if offset < 0:
             raise ValueError("offset must not be negative")
 
@@ -78,6 +96,21 @@ class IncidentService:
         )
         return list(self.session.scalars(statement))
 
+    def list_analysis_runs(self, incident_id: int) -> list[AnalysisRunHistoryItem]:
+        """Return safe incident-scoped analysis history newest first."""
+        rows = self.session.execute(
+            select(
+                AnalysisRun.id,
+                AnalysisRun.status,
+                AnalysisRun.started_at,
+                AnalysisRun.provider_name,
+                AnalysisRun.model_name,
+            )
+            .where(AnalysisRun.incident_id == incident_id)
+            .order_by(AnalysisRun.started_at.desc(), AnalysisRun.id.desc())
+        )
+        return [AnalysisRunHistoryItem(*row) for row in rows]
+
     def update_incident(
         self,
         public_id: str,
@@ -85,9 +118,7 @@ class IncidentService:
     ) -> Incident:
         """Apply a partial incident update and persist its recalculated status."""
         incident = self.get_incident_or_raise(public_id)
-        for field_name, value in incident_data.model_dump(
-            exclude_unset=True
-        ).items():
+        for field_name, value in incident_data.model_dump(exclude_unset=True).items():
             setattr(incident, field_name, value)
         self.recalculate_status(incident)
 
@@ -121,9 +152,7 @@ class IncidentService:
                 )
                 is not None
             )
-        incident.status = (
-            IncidentStatus.READY if has_evidence else IncidentStatus.DRAFT
-        )
+        incident.status = IncidentStatus.READY if has_evidence else IncidentStatus.DRAFT
         return incident.status
 
     def _next_public_id(self) -> str:

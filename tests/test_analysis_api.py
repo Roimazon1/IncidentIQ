@@ -103,6 +103,8 @@ def test_fake_analysis_can_be_run_and_reopened_without_exposing_raw_audit(
     assert "local-secret" not in detail_response.text
     assert '"raw_response"' not in detail_response.text
     assert '"hypotheses":[' not in detail_response.text
+    assert "Back to incident INC-000001" in detail_response.text
+    assert 'href="http://testserver/incidents/INC-000001"' in detail_response.text
 
     with database_session_factory() as session:
         persisted_run = session.scalar(
@@ -142,6 +144,8 @@ def test_running_analysis_renders_pending_page(
     assert "still running" in response.text
     assert "fixture-v1" in response.text
     assert "raw_response" not in response.text
+    assert f"Back to incident {public_id}" in response.text
+    assert f'href="http://testserver/incidents/{public_id}"' in response.text
 
 
 def test_failed_fake_analysis_remains_visible_without_raw_response(
@@ -230,6 +234,26 @@ def test_analysis_route_rejects_incident_without_evidence(
     assert response.status_code == 409
     assert response.json() == {
         "detail": f"Incident {public_id} requires evidence before analysis."
+    }
+
+
+def test_analysis_route_returns_safe_conflict_for_existing_running_run(
+    database_client: TestClient,
+    database_session_factory: sessionmaker[Session],
+) -> None:
+    public_id = _create_ready_incident(database_client)
+    with database_session_factory() as session:
+        AnalysisService(session).start_analysis_run(
+            public_id,
+            provider_name="fake",
+            model_name="fixture-v1",
+        )
+
+    response = database_client.post(f"/incidents/{public_id}/analysis")
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "detail": f"Incident {public_id} already has a running analysis."
     }
 
 

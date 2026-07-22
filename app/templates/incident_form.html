@@ -31,7 +31,13 @@
       <form method="post" action="{{ url_for('create_incident') }}" class="card border-0 shadow-sm">
         <div class="card-body p-4">
           {% include "partials/incident_fields.html" %}
-          <button class="btn btn-primary" type="submit">Create incident</button>
+          <button
+            class="btn btn-primary"
+            type="submit"
+            data-loading-label="Creating incident…"
+          >
+            Create incident
+          </button>
         </div>
       </form>
     </div>
