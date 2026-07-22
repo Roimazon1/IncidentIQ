@@ -1,4 +1,6 @@
-"""Persistence and status transitions for auditable analysis runs."""
+"""Lifecycle and provider-neutral stages for auditable analysis runs."""
+
+from hashlib import sha256
 
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
@@ -12,6 +14,21 @@ from app.models import (
     IncidentStatus,
     utc_now,
 )
+from app.schemas.ai_outputs import AIOutput, SummaryOutputV1
+from app.schemas.ai_provider import (
+    AIRequest,
+    AIResult,
+    AnalysisStage,
+    OutputSchemaIdentifier,
+    PromptBundle,
+    PromptName,
+    PromptReference,
+    PromptVersion,
+    SafeAIMetadata,
+)
+from app.schemas.evidence import EvidenceManifest, EvidenceManifestSource
+from app.services.ai_provider import AIProvider
+from app.services.evidence_manifest_service import EvidenceManifestService
 from app.services.incident_service import IncidentService
 
 
@@ -35,12 +52,26 @@ class AnalysisPersistenceError(RuntimeError):
     """Raised when an analysis lifecycle write cannot be completed safely."""
 
 
+class AnalysisProviderRequiredError(RuntimeError):
+    """Raised when an AI stage is requested without an injected provider."""
+
+
+class AnalysisStageOutputError(RuntimeError):
+    """Raised when a provider violates the requested stage output contract."""
+
+
 class AnalysisService:
     """Create analysis runs and persist their legal lifecycle transitions."""
 
-    def __init__(self, session: Session) -> None:
+    def __init__(
+        self,
+        session: Session,
+        *,
+        ai_provider: AIProvider | None = None,
+    ) -> None:
         self.session = session
         self._incident_service = IncidentService(session)
+        self._ai_provider = ai_provider
 
     def start_analysis_run(
         self,
@@ -107,6 +138,52 @@ class AnalysisService:
         )
         return analysis_run
 
+    def run_summary_stage(self, run_id: int) -> AIResult[SummaryOutputV1]:
+        """Run typed summary, fact, and assumption extraction on redacted evidence."""
+        analysis_run = self._get_analysis_run_or_raise(run_id)
+        self._require_running(
+            analysis_run,
+            operation="run summary extraction",
+        )
+        provider = self._require_ai_provider()
+        evidence_manifest = self._build_redacted_evidence_manifest(analysis_run)
+        request = self._build_summary_request(analysis_run, evidence_manifest)
+
+        result = provider.generate(request)
+        return self._validate_summary_result(
+            result,
+            request=request,
+            analysis_run=analysis_run,
+        )
+
+    @staticmethod
+    def _validate_summary_result(
+        result: AIResult[AIOutput],
+        *,
+        request: AIRequest,
+        analysis_run: AnalysisRun,
+    ) -> AIResult[SummaryOutputV1]:
+        metadata = result.metadata
+        output = result.output
+        if (
+            not isinstance(output, SummaryOutputV1)
+            or metadata.analysis_stage is not request.metadata.analysis_stage
+            or metadata.output_schema is not request.output_schema
+            or metadata.system_prompt != request.prompts.system
+            or metadata.task_prompt != request.prompts.task
+            or metadata.request_identifier != request.metadata.request_identifier
+            or metadata.provider_name != analysis_run.provider_name
+            or metadata.model_name != analysis_run.model_name
+        ):
+            raise AnalysisStageOutputError(
+                "The AI provider returned an invalid summary-stage output."
+            )
+        return AIResult[SummaryOutputV1](
+            output=output,
+            metadata=result.metadata,
+            audit=result.audit,
+        )
+
     def _get_analysis_run_or_raise(self, run_id: int) -> AnalysisRun:
         analysis_run = self.session.scalar(
             select(AnalysisRun).where(AnalysisRun.id == run_id)
@@ -144,13 +221,85 @@ class AnalysisService:
     def _require_running(
         analysis_run: AnalysisRun,
         *,
-        target_status: AnalysisRunStatus,
+        operation: str | None = None,
+        target_status: AnalysisRunStatus | None = None,
     ) -> None:
         if analysis_run.status is not AnalysisRunStatus.RUNNING:
+            requested_operation = operation
+            if requested_operation is None:
+                if target_status is None:
+                    raise ValueError("a requested analysis operation is required")
+                requested_operation = f"transition to {target_status.value}"
             raise AnalysisRunTransitionError(
-                f"Analysis run {analysis_run.id} cannot transition from "
-                f"{analysis_run.status.value} to {target_status.value}."
+                f"Analysis run {analysis_run.id} cannot {requested_operation} while "
+                f"its status is {analysis_run.status.value}."
             )
+
+    def _require_ai_provider(self) -> AIProvider:
+        if self._ai_provider is None:
+            raise AnalysisProviderRequiredError(
+                "An AI provider is required to run analysis stages."
+            )
+        return self._ai_provider
+
+    def _build_redacted_evidence_manifest(
+        self,
+        analysis_run: AnalysisRun,
+    ) -> EvidenceManifest:
+        evidence_items = tuple(
+            self.session.scalars(
+                select(EvidenceItem)
+                .where(EvidenceItem.incident_id == analysis_run.incident_id)
+                .order_by(EvidenceItem.evidence_code)
+            )
+        )
+        if not evidence_items:
+            raise AnalysisEvidenceRequiredError(
+                f"Incident {analysis_run.incident.public_id} requires evidence "
+                "before analysis."
+            )
+        sources = (
+            EvidenceManifestSource(
+                evidence_code=item.evidence_code,
+                source_name=item.source_name,
+                evidence_type=item.evidence_type,
+                original_text=item.original_text,
+            )
+            for item in evidence_items
+        )
+        return EvidenceManifestService.build_evidence_manifest(
+            analysis_run.incident.public_id,
+            sources,
+        )
+
+    @staticmethod
+    def _build_summary_request(
+        analysis_run: AnalysisRun,
+        evidence_manifest: EvidenceManifest,
+    ) -> AIRequest:
+        manifest_checksum = sha256(
+            evidence_manifest.model_dump_json().encode("utf-8")
+        ).hexdigest()
+        return AIRequest(
+            evidence_manifest=evidence_manifest,
+            prompts=PromptBundle(
+                system=PromptReference(
+                    name=PromptName.SYSTEM,
+                    version=PromptVersion.V1,
+                ),
+                task=PromptReference(
+                    name=PromptName.SUMMARY,
+                    version=PromptVersion.V1,
+                ),
+            ),
+            output_schema=OutputSchemaIdentifier.SUMMARY_V1,
+            metadata=SafeAIMetadata(
+                request_identifier=f"analysis-run-{analysis_run.id}-summary",
+                incident_public_identifier=analysis_run.incident.public_id,
+                analysis_stage=AnalysisStage.SUMMARY,
+                evidence_manifest_checksum=manifest_checksum,
+            ),
+        )
 
     def _commit(
         self,

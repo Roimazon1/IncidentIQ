@@ -1,7 +1,8 @@
 """Focused tests for analysis-run lifecycle transitions."""
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import UTC
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
@@ -14,18 +15,50 @@ from app.models import (
     AnalysisRunStatus,
     EvidenceItem,
     EvidenceType,
+    Fact,
     Incident,
     IncidentStatus,
+)
+from app.schemas.ai_outputs import AIOutput, SummaryOutputV1, TimelineOutputV1
+from app.schemas.ai_provider import (
+    AIRequest,
+    AIResult,
+    AnalysisStage,
+    OutputSchemaIdentifier,
+    PromptName,
+    PromptReference,
+    PromptVersion,
 )
 from app.services.analysis_service import (
     AnalysisAlreadyRunningError,
     AnalysisEvidenceRequiredError,
     AnalysisPersistenceError,
+    AnalysisProviderRequiredError,
     AnalysisRunNotFoundError,
     AnalysisRunTransitionError,
     AnalysisService,
+    AnalysisStageOutputError,
 )
+from app.services.ai_provider import build_ai_result
 from app.services.incident_service import IncidentNotFoundError
+from app.services.prompt_registry import PromptRegistry
+from app.services.providers.fake_provider import FakeAIProvider
+
+
+FIXTURE_PATH = Path(__file__).parent / "fixtures" / "fake_ai_responses.json"
+
+
+class _RecordingProvider:
+    def __init__(
+        self,
+        generate: Callable[[AIRequest], AIResult[AIOutput]],
+    ) -> None:
+        self._generate = generate
+        self.requests: list[AIRequest] = []
+
+    def generate(self, request: AIRequest) -> AIResult[AIOutput]:
+        self.requests.append(request)
+        return self._generate(request)
 
 
 @pytest.fixture
@@ -40,6 +73,7 @@ def _persist_incident(
     session: Session,
     *,
     with_evidence: bool = True,
+    original_text: str = "Checkout failed",
 ) -> Incident:
     incident = Incident(
         public_id="INC-000001",
@@ -54,7 +88,7 @@ def _persist_incident(
                 evidence_code="E-001",
                 source_name="checkout.log",
                 evidence_type=EvidenceType.APPLICATION_LOG,
-                original_text="Checkout failed",
+                original_text=original_text,
                 checksum="a" * 64,
             )
         )
@@ -69,6 +103,28 @@ def _start_run(service: AnalysisService, public_id: str) -> AnalysisRun:
         provider_name="fake",
         model_name="fixture-v1",
     )
+
+
+def _recording_summary_provider() -> _RecordingProvider:
+    registry = PromptRegistry()
+    provider = FakeAIProvider.from_file(
+        FIXTURE_PATH,
+        "valid_summary",
+        prompt_resolver=registry.resolve_content,
+        prompt_bundle_validator=registry.validate_bundle,
+    )
+    return _RecordingProvider(provider.generate)
+
+
+def _assert_no_summary_persistence(session: Session, run_id: int) -> None:
+    session.expire_all()
+    persisted_run = session.scalar(select(AnalysisRun).where(AnalysisRun.id == run_id))
+    assert persisted_run is not None
+    assert persisted_run.status is AnalysisRunStatus.RUNNING
+    assert persisted_run.raw_response is None
+    assert persisted_run.prompt_versions == {}
+    assert persisted_run.input_evidence_codes == []
+    assert session.scalar(select(func.count(Fact.id))) == 0
 
 
 def test_start_analysis_run_persists_running_lifecycle(
@@ -251,3 +307,159 @@ def test_start_analysis_run_refresh_failure_rolls_back_before_commit(
         select(Incident.status).where(Incident.id == incident.id)
     )
     assert persisted_status is IncidentStatus.READY
+
+
+def test_summary_stage_extracts_typed_facts_and_assumptions_from_redacted_input(
+    service_session: Session,
+) -> None:
+    secret = "sk-production-secret-1234"
+    incident = _persist_incident(
+        service_session,
+        original_text=f"api_key={secret}\nCheckout failed",
+    )
+    provider = _recording_summary_provider()
+    service = AnalysisService(service_session, ai_provider=provider)
+    analysis_run = _start_run(service, incident.public_id)
+
+    result = service.run_summary_stage(analysis_run.id)
+
+    assert isinstance(result.output, SummaryOutputV1)
+    assert result.output.summary.text == "Checkout requests are failing."
+    assert [fact.claim for fact in result.output.facts] == [
+        "The redacted checkout log contains a failure."
+    ]
+    assert [assumption.claim for assumption in result.output.assumptions] == [
+        "A deployment may be related."
+    ]
+    assert result.output.unknowns == ("The root cause is not verified.",)
+    assert len(provider.requests) == 1
+    request = provider.requests[0]
+    assert request.metadata.analysis_stage is AnalysisStage.SUMMARY
+    assert request.output_schema is OutputSchemaIdentifier.SUMMARY_V1
+    assert request.prompts.system.name is PromptName.SYSTEM
+    assert request.prompts.task.name is PromptName.SUMMARY
+    assert request.metadata.incident_public_identifier == incident.public_id
+    assert request.metadata.evidence_manifest_checksum is not None
+    serialized_request = request.model_dump_json()
+    assert secret not in serialized_request
+    assert "[REDACTED_API_KEY]" in serialized_request
+    assert result.audit.raw_response
+
+
+def test_summary_stage_rejects_non_summary_output_without_persistence(
+    service_session: Session,
+) -> None:
+    raw_response = '{"events":[],"sensitive":"provider-only"}'
+
+    def generate_timeline_result(request: AIRequest) -> AIResult[AIOutput]:
+        return build_ai_result(
+            request=request,
+            output=TimelineOutputV1(events=()),
+            provider_name="fake",
+            model_name="fixture-v1",
+            attempt_count=1,
+            raw_response=raw_response,
+        )
+
+    incident = _persist_incident(service_session)
+    provider = _RecordingProvider(generate_timeline_result)
+    service = AnalysisService(service_session, ai_provider=provider)
+    analysis_run = _start_run(service, incident.public_id)
+
+    with pytest.raises(AnalysisStageOutputError) as error_info:
+        service.run_summary_stage(analysis_run.id)
+
+    assert raw_response not in str(error_info.value)
+    assert raw_response not in repr(error_info.value)
+    _assert_no_summary_persistence(service_session, analysis_run.id)
+
+
+@pytest.mark.parametrize(
+    "metadata_update",
+    [
+        {"analysis_stage": AnalysisStage.TIMELINE},
+        {"output_schema": OutputSchemaIdentifier.TIMELINE_V1},
+        {
+            "system_prompt": PromptReference(
+                name=PromptName.SUMMARY,
+                version=PromptVersion.V1,
+            )
+        },
+        {
+            "task_prompt": PromptReference(
+                name=PromptName.TIMELINE,
+                version=PromptVersion.V1,
+            )
+        },
+        {"request_identifier": "different-summary-request"},
+        {"provider_name": "gemini"},
+        {"model_name": "gemini-2.5-flash"},
+    ],
+    ids=[
+        "analysis-stage",
+        "output-schema",
+        "system-prompt",
+        "task-prompt",
+        "request-identifier",
+        "provider-name",
+        "model-name",
+    ],
+)
+def test_summary_stage_rejects_mismatched_traceability_without_persistence(
+    service_session: Session,
+    metadata_update: dict[str, object],
+) -> None:
+    fixture_provider = _recording_summary_provider()
+    returned_raw_responses: list[str] = []
+
+    def generate_mismatched_result(request: AIRequest) -> AIResult[AIOutput]:
+        result = fixture_provider.generate(request)
+        returned_raw_responses.append(result.audit.raw_response)
+        return AIResult[AIOutput](
+            output=result.output,
+            metadata=result.metadata.model_copy(update=metadata_update),
+            audit=result.audit,
+        )
+
+    incident = _persist_incident(service_session)
+    provider = _RecordingProvider(generate_mismatched_result)
+    service = AnalysisService(service_session, ai_provider=provider)
+    analysis_run = _start_run(service, incident.public_id)
+
+    with pytest.raises(AnalysisStageOutputError) as error_info:
+        service.run_summary_stage(analysis_run.id)
+
+    assert len(returned_raw_responses) == 1
+    raw_response = returned_raw_responses[0]
+    assert raw_response not in str(error_info.value)
+    assert raw_response not in repr(error_info.value)
+    _assert_no_summary_persistence(service_session, analysis_run.id)
+
+
+def test_summary_stage_requires_injected_provider(
+    service_session: Session,
+) -> None:
+    incident = _persist_incident(service_session)
+    service = AnalysisService(service_session)
+    analysis_run = _start_run(service, incident.public_id)
+
+    with pytest.raises(AnalysisProviderRequiredError, match="provider is required"):
+        service.run_summary_stage(analysis_run.id)
+
+    assert analysis_run.status is AnalysisRunStatus.RUNNING
+    assert incident.status is IncidentStatus.ANALYZING
+
+
+def test_summary_stage_rejects_terminal_run_before_provider_call(
+    service_session: Session,
+) -> None:
+    incident = _persist_incident(service_session)
+    provider = _recording_summary_provider()
+    service = AnalysisService(service_session, ai_provider=provider)
+    analysis_run = _start_run(service, incident.public_id)
+    service.mark_analysis_run_completed(analysis_run.id)
+
+    with pytest.raises(AnalysisRunTransitionError, match="summary extraction"):
+        service.run_summary_stage(analysis_run.id)
+
+    assert provider.requests == []
