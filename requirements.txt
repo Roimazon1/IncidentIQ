@@ -1,4 +1,5 @@
 fastapi[standard]
+google-genai
 sqlalchemy
 pydantic
 pydantic-settings
