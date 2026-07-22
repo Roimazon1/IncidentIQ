@@ -55,6 +55,7 @@ class AnalysisPageData:
 
     analysis_run: AnalysisRun
     summary_output: SummaryOutputV1 | None
+    timeline_output: TimelineOutputV1 | None
     critic_output: CriticOutputV1 | None
     confirmed_facts: tuple[Fact, ...]
     unconfirmed_claims: tuple[Fact, ...]
@@ -355,6 +356,9 @@ class AnalysisService:
         return AnalysisPageData(
             analysis_run=analysis_run,
             summary_output=self._result_persistence.extract_summary_output(
+                analysis_run.raw_response
+            ),
+            timeline_output=self._result_persistence.extract_timeline_output(
                 analysis_run.raw_response
             ),
             critic_output=self._result_persistence.extract_critic_output(

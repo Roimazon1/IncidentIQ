@@ -28,7 +28,9 @@ from app.models import (
 )
 from app.schemas.ai_outputs import (
     AIOutput,
+    ContradictingEvidenceV1,
     CriticOutputV1,
+    EvidenceReferenceV1,
     HypothesesOutputV1,
     SummaryOutputV1,
     TimelineOutputV1,
@@ -909,6 +911,10 @@ def test_core_analysis_persists_all_validated_outputs_and_audit_data(
         )
         assert timeline_output.events[0].timestamp == "2025-01-01T12:30:00+02:00"
         assert timeline_output.events[1].timestamp == "time unknown"
+        assert timeline_output.events[1].uncertainty_explanation == (
+            "Only one captured failure is available, so the start time cannot be "
+            "established."
+        )
         assert len(persisted_run.hypotheses) == 3
         assert sorted(hypothesis.rank for hypothesis in persisted_run.hypotheses) == [
             1,
@@ -922,6 +928,87 @@ def test_core_analysis_persists_all_validated_outputs_and_audit_data(
     assert all(request.critic_context is None for request in provider.requests[:3])
     assert provider.requests[3].critic_context is not None
     assert all(secret not in request.model_dump_json() for request in provider.requests)
+
+
+def test_core_analysis_lowers_confidence_for_valid_contradicting_evidence(
+    database_session_factory: sessionmaker[Session],
+) -> None:
+    fixture_provider = _recording_core_provider()
+
+    def generate_contradicting_hypothesis(
+        request: AIRequest,
+    ) -> AIResult[AIOutput]:
+        result = fixture_provider.generate(request)
+        if request.metadata.analysis_stage is not AnalysisStage.HYPOTHESES:
+            return result
+        output = result.output
+        assert isinstance(output, HypothesesOutputV1)
+        first_hypothesis = output.hypotheses[0]
+        contradiction = ContradictingEvidenceV1(
+            reference=EvidenceReferenceV1(
+                evidence_id="E-001",
+                line_range="2",
+                excerpt="database pool healthy",
+            ),
+            relevance="The observed healthy pool conflicts with pool exhaustion.",
+        )
+        modified_output = output.model_copy(
+            update={
+                "hypotheses": (
+                    first_hypothesis.model_copy(
+                        update={"contradicting_evidence": (contradiction,)},
+                    ),
+                    *output.hypotheses[1:],
+                )
+            }
+        )
+        return AIResult[AIOutput](
+            output=modified_output,
+            metadata=result.metadata,
+            audit=SuccessAuditData(raw_response=modified_output.model_dump_json()),
+        )
+
+    provider = _RecordingProvider(generate_contradicting_hypothesis)
+    with database_session_factory() as session:
+        incident = _persist_incident(
+            session,
+            original_text="checkout failed\ndatabase pool healthy",
+        )
+        service = AnalysisService(session, ai_provider=provider)
+        analysis_run = _start_run(service, incident.public_id)
+
+        completed_run = service.run_core_analysis(analysis_run.id)
+        run_id = completed_run.id
+
+    with database_session_factory() as session:
+        persisted_run = session.scalar(
+            select(AnalysisRun)
+            .options(selectinload(AnalysisRun.hypotheses))
+            .where(AnalysisRun.id == run_id)
+        )
+
+        assert persisted_run is not None
+        top_hypothesis = min(persisted_run.hypotheses, key=lambda item: item.rank)
+        assert top_hypothesis.confidence == 50
+        assert top_hypothesis.contradicting_evidence_codes == ["E-001"]
+
+        audit_envelope = json.loads(persisted_run.raw_response or "")
+        audited_hypothesis = audit_envelope["stages"]["hypotheses"]["parsed_output"][
+            "hypotheses"
+        ][0]
+        assert audited_hypothesis["confidence"] == 60
+        assert audited_hypothesis["contradicting_evidence"] == [
+            {
+                "reference": {
+                    "evidence_id": "E-001",
+                    "line_range": "2",
+                    "excerpt": "database pool healthy",
+                },
+                "relevance": (
+                    "The observed healthy pool conflicts with pool exhaustion."
+                ),
+            }
+        ]
 
 
 @pytest.mark.parametrize(

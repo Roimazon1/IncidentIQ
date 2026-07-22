@@ -1,5 +1,7 @@
 """Endpoint tests for running and reopening the basic analysis workflow."""
 
+import json
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -16,8 +18,21 @@ from app.models import (
     IncidentStatus,
 )
 from app.routers import analysis as analysis_router
-from app.schemas.ai_outputs import AIOutput, SummaryOutputV1
-from app.schemas.ai_provider import AIRequest, AIResult, AnalysisStage
+from app.schemas.ai_outputs import (
+    AIOutput,
+    ContradictingEvidenceV1,
+    EvidenceReferenceV1,
+    HypothesesOutputV1,
+    SummaryOutputV1,
+    TimelineOutputV1,
+)
+from app.schemas.ai_provider import (
+    AIRequest,
+    AIResult,
+    AnalysisStage,
+    SuccessAuditData,
+)
+from app.services.ai_provider import AIProvider
 from app.services.analysis_service import AnalysisService
 from app.services.prompt_registry import PromptRegistry
 from app.services.providers.fake_provider import FakeAIProvider
@@ -57,6 +72,78 @@ class _OutOfRangeSummaryProvider:
             metadata=result.metadata,
             audit=result.audit,
         )
+
+
+class _HighConfidenceTimelineProvider:
+    def __init__(self, delegate: FakeAIProvider) -> None:
+        self._delegate = delegate
+
+    def generate(self, request: AIRequest) -> AIResult[AIOutput]:
+        result = self._delegate.generate(request)
+        if request.metadata.analysis_stage is not AnalysisStage.TIMELINE:
+            return result
+        output = result.output
+        assert isinstance(output, TimelineOutputV1)
+        output_data = output.model_dump()
+        output_data["events"][0]["confidence"] = 88
+        output_data["events"][1]["confidence"] = 95
+        modified_output = TimelineOutputV1.model_validate(output_data)
+        return AIResult[AIOutput](
+            output=modified_output,
+            metadata=result.metadata,
+            audit=SuccessAuditData(raw_response=modified_output.model_dump_json()),
+        )
+
+
+class _ContradictingHypothesisProvider:
+    def __init__(self, delegate: FakeAIProvider) -> None:
+        self._delegate = delegate
+
+    def generate(self, request: AIRequest) -> AIResult[AIOutput]:
+        result = self._delegate.generate(request)
+        if request.metadata.analysis_stage is not AnalysisStage.HYPOTHESES:
+            return result
+        output = result.output
+        assert isinstance(output, HypothesesOutputV1)
+        first_hypothesis = output.hypotheses[0]
+        contradiction = ContradictingEvidenceV1(
+            reference=EvidenceReferenceV1(
+                evidence_id="E-001",
+                line_range="2",
+                excerpt="database pool healthy",
+            ),
+            relevance="The observed healthy pool conflicts with pool exhaustion.",
+        )
+        modified_output = output.model_copy(
+            update={
+                "hypotheses": (
+                    first_hypothesis.model_copy(
+                        update={"contradicting_evidence": (contradiction,)},
+                    ),
+                    *output.hypotheses[1:],
+                )
+            }
+        )
+        return AIResult[AIOutput](
+            output=modified_output,
+            metadata=result.metadata,
+            audit=SuccessAuditData(raw_response=modified_output.model_dump_json()),
+        )
+
+
+def _configured_service_builder(
+    provider: AIProvider,
+) -> Callable[[Session, Settings], AnalysisService]:
+    def build_service(session: Session, settings: Settings) -> AnalysisService:
+        del settings
+        return AnalysisService(
+            session,
+            ai_provider=provider,
+            configured_provider_name="fake",
+            configured_model_name="fixture-v1",
+        )
+
+    return build_service
 
 
 @pytest.fixture(autouse=True)
@@ -133,6 +220,11 @@ def test_fake_analysis_can_be_run_and_reopened_without_exposing_raw_audit(
     assert "Timeline" in detail_response.text
     assert "Direct" in detail_response.text
     assert "Inferred" in detail_response.text
+    assert "Inference uncertainty" in detail_response.text
+    assert (
+        "Only one captured failure is available, so the start time cannot be "
+        "established."
+    ) in detail_response.text
     assert "Ranked hypotheses" in detail_response.text
     assert "Database connection pool exhaustion" in detail_response.text
     assert "Recent deployment regression" in detail_response.text
@@ -179,6 +271,68 @@ def test_fake_analysis_can_be_run_and_reopened_without_exposing_raw_audit(
         ]
 
 
+def test_inferred_provider_confidence_is_capped_after_auditing(
+    database_client: TestClient,
+    database_session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = PromptRegistry()
+    provider = _HighConfidenceTimelineProvider(
+        FakeAIProvider.from_file_set(
+            FIXTURE_PATH,
+            CORE_FIXTURES,
+            prompt_resolver=registry.resolve_content,
+            prompt_bundle_validator=registry.validate_bundle,
+        )
+    )
+    monkeypatch.setattr(
+        analysis_router,
+        "build_configured_analysis_service",
+        _configured_service_builder(provider),
+    )
+    public_id = _create_ready_incident(database_client)
+
+    start_response = database_client.post(
+        f"/incidents/{public_id}/analysis",
+        follow_redirects=False,
+    )
+    detail_response = database_client.get(start_response.headers["location"])
+
+    with database_session_factory() as session:
+        persisted_run = session.scalar(
+            select(AnalysisRun).options(selectinload(AnalysisRun.timeline_events))
+        )
+        assert persisted_run is not None
+        assert persisted_run.status is AnalysisRunStatus.COMPLETED
+        direct_event = next(
+            event for event in persisted_run.timeline_events if not event.is_inferred
+        )
+        inferred_event = next(
+            event for event in persisted_run.timeline_events if event.is_inferred
+        )
+        assert direct_event.confidence == 88
+        assert inferred_event.confidence == 70
+
+        audit_envelope = json.loads(persisted_run.raw_response or "")
+        timeline_audit = audit_envelope["stages"]["timeline"]
+        audited_events = timeline_audit["parsed_output"]["events"]
+        raw_events = json.loads(timeline_audit["raw_response"])["events"]
+        assert [event["confidence"] for event in audited_events] == [88, 95]
+        assert [event["confidence"] for event in raw_events] == [88, 95]
+
+    assert start_response.status_code == 303
+    assert detail_response.status_code == 200
+    assert "Confidence 88%" in detail_response.text
+    assert "Confidence 70%" in detail_response.text
+    assert "Confidence 95%" not in detail_response.text
+    assert "Inference uncertainty" in detail_response.text
+    assert (
+        "Only one captured failure is available, so the start time cannot be "
+        "established."
+    ) in detail_response.text
+    assert '"raw_response"' not in detail_response.text
+
+
 def test_out_of_range_fact_is_separate_from_confirmed_facts(
     database_client: TestClient,
     database_session_factory: sessionmaker[Session],
@@ -194,22 +348,10 @@ def test_out_of_range_fact_is_separate_from_confirmed_facts(
         )
     )
 
-    def build_out_of_range_analysis_service(
-        session: Session,
-        settings: Settings,
-    ) -> AnalysisService:
-        del settings
-        return AnalysisService(
-            session,
-            ai_provider=provider,
-            configured_provider_name="fake",
-            configured_model_name="fixture-v1",
-        )
-
     monkeypatch.setattr(
         analysis_router,
         "build_configured_analysis_service",
-        build_out_of_range_analysis_service,
+        _configured_service_builder(provider),
     )
     public_id = _create_ready_incident(database_client)
     start_response = database_client.post(
@@ -235,6 +377,53 @@ def test_out_of_range_fact_is_separate_from_confirmed_facts(
     assert detail_response.text.index(claim) > detail_response.text.index(
         "Unconfirmed AI claims"
     )
+
+
+def test_valid_contradiction_remains_visible_with_adjusted_confidence(
+    database_client: TestClient,
+    database_session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = PromptRegistry()
+    provider = _ContradictingHypothesisProvider(
+        FakeAIProvider.from_file_set(
+            FIXTURE_PATH,
+            CORE_FIXTURES,
+            prompt_resolver=registry.resolve_content,
+            prompt_bundle_validator=registry.validate_bundle,
+        )
+    )
+    monkeypatch.setattr(
+        analysis_router,
+        "build_configured_analysis_service",
+        _configured_service_builder(provider),
+    )
+    public_id = _create_ready_incident(
+        database_client,
+        evidence_text="checkout failed\ndatabase pool healthy",
+    )
+
+    start_response = database_client.post(
+        f"/incidents/{public_id}/analysis",
+        follow_redirects=False,
+    )
+    detail_response = database_client.get(start_response.headers["location"])
+
+    with database_session_factory() as session:
+        persisted_run = session.scalar(
+            select(AnalysisRun).options(selectinload(AnalysisRun.hypotheses))
+        )
+        assert persisted_run is not None
+        top_hypothesis = min(persisted_run.hypotheses, key=lambda item: item.rank)
+        assert top_hypothesis.confidence == 50
+        assert top_hypothesis.contradicting_evidence_codes == ["E-001"]
+
+    assert detail_response.status_code == 200
+    assert "Confidence 50%" in detail_response.text
+    assert "Contradicting evidence" in detail_response.text
+    assert "E-001" in detail_response.text
+    assert "Confidence is reduced deterministically" in detail_response.text
+    assert '"raw_response"' not in detail_response.text
 
 
 def test_running_analysis_renders_pending_page(

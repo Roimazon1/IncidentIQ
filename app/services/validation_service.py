@@ -19,6 +19,8 @@ from app.services.preprocessing_service import PreprocessingService
 
 
 _NUMBERED_LINE_PATTERN = re.compile(r"^L(?P<number>\d+):(?: (?P<content>.*))?$")
+INFERRED_TIMELINE_CONFIDENCE_CAP = 70
+VALID_CONTRADICTION_CONFIDENCE_PENALTY = 10
 
 
 class EvidenceReferenceValidationStatus(StrEnum):
@@ -132,6 +134,30 @@ class ValidationService:
         if valid_count < len(outcome_set):
             return ClaimSupportStatus.PARTIALLY_SUPPORTED
         return ClaimSupportStatus.SUPPORTED
+
+    @staticmethod
+    def apply_inferred_timeline_confidence_cap(
+        confidence: int,
+        is_inferred: bool,
+    ) -> int:
+        """Cap inferred-event confidence without changing direct events."""
+        if not is_inferred:
+            return confidence
+        return min(confidence, INFERRED_TIMELINE_CONFIDENCE_CAP)
+
+    @staticmethod
+    def adjust_hypothesis_confidence_for_contradictions(
+        confidence: int,
+        contradiction_outcomes: Iterable[EvidenceReferenceValidationOutcome],
+    ) -> int:
+        """Lower confidence for each distinct validated contradiction."""
+        valid_references = {
+            (outcome.evidence_id, outcome.line_range)
+            for outcome in contradiction_outcomes
+            if outcome.is_valid
+        }
+        adjustment = len(valid_references) * VALID_CONTRADICTION_CONFIDENCE_PENALTY
+        return max(0, confidence - adjustment)
 
     @staticmethod
     def _outcome(

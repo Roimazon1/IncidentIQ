@@ -273,6 +273,48 @@ def test_classify_claim_support_consumes_reference_validation_outcomes() -> None
 
 
 @pytest.mark.parametrize(
+    ("confidence", "is_inferred", "expected_confidence"),
+    [(95, True, 70), (70, True, 70), (95, False, 95)],
+)
+def test_apply_inferred_timeline_confidence_cap(
+    confidence: int,
+    is_inferred: bool,
+    expected_confidence: int,
+) -> None:
+    assert (
+        ValidationService.apply_inferred_timeline_confidence_cap(
+            confidence,
+            is_inferred,
+        )
+        == expected_confidence
+    )
+
+
+def test_adjust_hypothesis_confidence_uses_only_distinct_valid_contradictions() -> None:
+    manifest = _manifest()
+    valid = ValidationService.validate_supporting_excerpt(
+        EvidenceReferenceV1(evidence_id="E-001", line_range="1"),
+        manifest,
+    )
+    invalid = ValidationService.validate_supporting_excerpt(
+        EvidenceReferenceV1(evidence_id="E-999", line_range="1"),
+        manifest,
+    )
+
+    adjusted = ValidationService.adjust_hypothesis_confidence_for_contradictions(
+        60,
+        (valid, valid, invalid),
+    )
+    unchanged = ValidationService.adjust_hypothesis_confidence_for_contradictions(
+        60,
+        (invalid,),
+    )
+
+    assert adjusted == 50
+    assert unchanged == 60
+
+
+@pytest.mark.parametrize(
     ("fixture_name", "output_model"),
     [
         ("valid_summary", SummaryOutputV1),

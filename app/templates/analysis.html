@@ -161,6 +161,22 @@
             </li>
           {% endfor %}
         </ol>
+        {% if page.timeline_output %}
+          {% set inferred_events = page.timeline_output.events | selectattr("is_inferred") | list %}
+          {% if inferred_events %}
+            <div class="alert alert-warning mt-3 mb-0" role="note">
+              <h3 class="h6">Inference uncertainty</h3>
+              <ul class="mb-0">
+                {% for event in inferred_events %}
+                  <li>
+                    {{ event.description }}:
+                    {{ event.uncertainty_explanation }}
+                  </li>
+                {% endfor %}
+              </ul>
+            </div>
+          {% endif %}
+        {% endif %}
       {% else %}
         <p class="mb-0">No timeline events were retained.</p>
       {% endif %}
@@ -172,6 +188,7 @@
       <h2 class="h4" id="hypotheses-heading">Ranked hypotheses</h2>
       <p class="small text-body-secondary">
         Hypotheses are plausible explanations to test, not confirmed root causes.
+        Confidence is reduced deterministically when validated contradicting evidence is present.
       </p>
       <div class="vstack gap-3">
         {% for hypothesis in analysis_run.hypotheses | sort(attribute="rank") %}

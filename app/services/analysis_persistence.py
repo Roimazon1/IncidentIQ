@@ -20,6 +20,7 @@ from app.models import (
 from app.schemas.ai_outputs import (
     CriticOutputV1,
     FactItemV1,
+    HypothesisV1,
     HypothesesOutputV1,
     SummaryOutputV1,
     TimelineOutputV1,
@@ -123,33 +124,17 @@ class AnalysisResultPersistence:
                     dict.fromkeys(reference.evidence_id for reference in event.evidence)
                 ),
                 is_inferred=event.is_inferred,
-                confidence=event.confidence,
+                confidence=(
+                    ValidationService.apply_inferred_timeline_confidence_cap(
+                        event.confidence,
+                        event.is_inferred,
+                    )
+                ),
             )
             for event in timeline_result.output.events
         ]
         analysis_run.hypotheses = [
-            Hypothesis(
-                rank=hypothesis.rank,
-                title=hypothesis.title,
-                explanation=hypothesis.explanation,
-                confidence=hypothesis.confidence,
-                supporting_evidence_codes=list(
-                    dict.fromkeys(
-                        evidence.reference.evidence_id
-                        for evidence in hypothesis.supporting_evidence
-                    )
-                ),
-                contradicting_evidence_codes=list(
-                    dict.fromkeys(
-                        evidence.reference.evidence_id
-                        for evidence in hypothesis.contradicting_evidence
-                    )
-                ),
-                missing_evidence=list(hypothesis.missing_evidence),
-                recommended_test=hypothesis.validation_test.description,
-                expected_true_result=hypothesis.validation_test.expected_if_true,
-                expected_false_result=hypothesis.validation_test.expected_if_false,
-            )
+            self._build_hypothesis(hypothesis, evidence_manifest)
             for hypothesis in hypotheses_result.output.hypotheses
         ]
         self.require_complete_core_results(analysis_run)
@@ -190,6 +175,46 @@ class AnalysisResultPersistence:
             supporting_excerpt=supporting_excerpt,
         )
 
+    @staticmethod
+    def _build_hypothesis(
+        hypothesis: HypothesisV1,
+        evidence_manifest: EvidenceManifest,
+    ) -> Hypothesis:
+        contradiction_outcomes = tuple(
+            ValidationService.validate_supporting_excerpt(
+                evidence.reference,
+                evidence_manifest,
+            )
+            for evidence in hypothesis.contradicting_evidence
+        )
+        return Hypothesis(
+            rank=hypothesis.rank,
+            title=hypothesis.title,
+            explanation=hypothesis.explanation,
+            confidence=(
+                ValidationService.adjust_hypothesis_confidence_for_contradictions(
+                    hypothesis.confidence,
+                    contradiction_outcomes,
+                )
+            ),
+            supporting_evidence_codes=list(
+                dict.fromkeys(
+                    evidence.reference.evidence_id
+                    for evidence in hypothesis.supporting_evidence
+                )
+            ),
+            contradicting_evidence_codes=list(
+                dict.fromkeys(
+                    evidence.reference.evidence_id
+                    for evidence in hypothesis.contradicting_evidence
+                )
+            ),
+            missing_evidence=list(hypothesis.missing_evidence),
+            recommended_test=hypothesis.validation_test.description,
+            expected_true_result=hypothesis.validation_test.expected_if_true,
+            expected_false_result=hypothesis.validation_test.expected_if_false,
+        )
+
     def persist_failed_analysis(
         self,
         analysis_run: AnalysisRun,
@@ -225,6 +250,15 @@ class AnalysisResultPersistence:
             raw_response,
             analysis_stage=AnalysisStage.CRITIC,
             output_type=CriticOutputV1,
+        )
+
+    @staticmethod
+    def extract_timeline_output(raw_response: str | None) -> TimelineOutputV1 | None:
+        """Read only the validated timeline from an internal audit envelope."""
+        return AnalysisResultPersistence._extract_stage_output(
+            raw_response,
+            analysis_stage=AnalysisStage.TIMELINE,
+            output_type=TimelineOutputV1,
         )
 
     @staticmethod

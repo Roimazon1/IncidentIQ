@@ -449,16 +449,17 @@ def test_inferred_timeline_event_accepts_confidence_of_70() -> None:
     assert event.confidence == 70
 
 
-def test_inferred_timeline_event_rejects_confidence_of_71() -> None:
-    with pytest.raises(ValidationError, match="cannot exceed 70"):
-        TimelineEventV1(
-            timestamp="time unknown",
-            description="A failure may have started.",
-            evidence=(_reference(),),
-            is_inferred=True,
-            confidence=71,
-            uncertainty_explanation="The evidence has no direct timestamp.",
-        )
+def test_inferred_timeline_event_retains_provider_confidence_above_cap() -> None:
+    event = TimelineEventV1(
+        timestamp="time unknown",
+        description="A failure may have started.",
+        evidence=(_reference(),),
+        is_inferred=True,
+        confidence=95,
+        uncertainty_explanation="The evidence has no direct timestamp.",
+    )
+
+    assert event.confidence == 95
 
 
 def test_hypothesis_requires_a_typed_validation_test() -> None:

@@ -98,13 +98,11 @@ class TimelineEventV1(StrictAIOutputModel):
 
     @model_validator(mode="after")
     def require_inference_explanation(self) -> TimelineEventV1:
-        """Enforce uncertainty details and the inferred-confidence ceiling."""
+        """Require explicit uncertainty context for every inferred event."""
         if self.is_inferred and self.uncertainty_explanation is None:
             raise ValueError(
                 "inferred timeline events require an uncertainty explanation"
             )
-        if self.is_inferred and self.confidence > 70:
-            raise ValueError("inferred timeline event confidence cannot exceed 70")
         return self
 
 
