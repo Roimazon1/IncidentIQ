@@ -1,18 +1,20 @@
 """Focused tests for analysis-run lifecycle transitions."""
 
+import json
 from collections.abc import Callable, Iterator
-from datetime import UTC
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
 from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session, selectinload, sessionmaker
 
 from app.models import (
     AnalysisRun,
     AnalysisRunStatus,
+    ClaimSupportStatus,
     EvidenceItem,
     EvidenceType,
     Fact,
@@ -28,6 +30,7 @@ from app.schemas.ai_outputs import (
     TimelineOutputV1,
 )
 from app.schemas.ai_provider import (
+    AIFailureCategory,
     AIRequest,
     AIResult,
     AnalysisStage,
@@ -46,7 +49,7 @@ from app.services.analysis_service import (
     AnalysisService,
     AnalysisStageOutputError,
 )
-from app.services.ai_provider import build_ai_result
+from app.services.ai_provider import AIProviderExecutionError, build_ai_result
 from app.services.incident_service import IncidentNotFoundError
 from app.services.prompt_registry import PromptRegistry
 from app.services.providers.fake_provider import FakeAIProvider
@@ -112,19 +115,38 @@ def _start_run(service: AnalysisService, public_id: str) -> AnalysisRun:
     )
 
 
-def _recording_stage_provider(fixture_name: str) -> _RecordingProvider:
+def _fixture_provider(fixture_name: str) -> FakeAIProvider:
     registry = PromptRegistry()
-    provider = FakeAIProvider.from_file(
+    return FakeAIProvider.from_file(
         FIXTURE_PATH,
         fixture_name,
         prompt_resolver=registry.resolve_content,
         prompt_bundle_validator=registry.validate_bundle,
     )
-    return _RecordingProvider(provider.generate)
+
+
+def _recording_stage_provider(fixture_name: str) -> _RecordingProvider:
+    return _RecordingProvider(_fixture_provider(fixture_name).generate)
 
 
 def _recording_summary_provider() -> _RecordingProvider:
     return _recording_stage_provider("valid_summary")
+
+
+def _recording_core_provider(
+    *,
+    timeline_fixture: str = "valid_timeline",
+) -> _RecordingProvider:
+    providers = {
+        OutputSchemaIdentifier.SUMMARY_V1: _fixture_provider("valid_summary"),
+        OutputSchemaIdentifier.TIMELINE_V1: _fixture_provider(timeline_fixture),
+        OutputSchemaIdentifier.HYPOTHESES_V1: _fixture_provider("valid_hypotheses"),
+    }
+
+    def generate(request: AIRequest) -> AIResult[AIOutput]:
+        return providers[request.output_schema].generate(request)
+
+    return _RecordingProvider(generate)
 
 
 def _assert_no_stage_persistence(session: Session, run_id: int) -> None:
@@ -190,20 +212,19 @@ def test_start_analysis_run_rejects_second_running_run(
     assert first_run.status is AnalysisRunStatus.RUNNING
 
 
-def test_mark_analysis_run_completed_sets_terminal_statuses(
+def test_mark_analysis_run_completed_rejects_missing_stage_results(
     service_session: Session,
 ) -> None:
     incident = _persist_incident(service_session)
     service = AnalysisService(service_session)
     analysis_run = _start_run(service, incident.public_id)
 
-    completed_run = service.mark_analysis_run_completed(analysis_run.id)
+    with pytest.raises(AnalysisRunTransitionError, match="required stage results"):
+        service.mark_analysis_run_completed(analysis_run.id)
 
-    assert completed_run.status is AnalysisRunStatus.COMPLETED
-    assert completed_run.completed_at is not None
-    assert completed_run.completed_at.tzinfo is UTC
-    assert completed_run.error_message is None
-    assert completed_run.incident.status is IncidentStatus.COMPLETED
+    assert analysis_run.status is AnalysisRunStatus.RUNNING
+    assert analysis_run.completed_at is None
+    assert analysis_run.incident.status is IncidentStatus.ANALYZING
 
 
 def test_mark_analysis_run_failed_retains_run_and_safe_explanation(
@@ -238,13 +259,15 @@ def test_terminal_analysis_run_cannot_transition_again(
     incident = _persist_incident(service_session)
     service = AnalysisService(service_session)
     analysis_run = _start_run(service, incident.public_id)
-    if terminal_status is AnalysisRunStatus.COMPLETED:
-        service.mark_analysis_run_completed(analysis_run.id)
-    else:
+    if terminal_status is AnalysisRunStatus.FAILED:
         service.mark_analysis_run_failed(
             analysis_run.id,
             error_message="Analysis failed safely.",
         )
+    else:
+        analysis_run.status = AnalysisRunStatus.COMPLETED
+        incident.status = IncidentStatus.COMPLETED
+        service_session.commit()
 
     with pytest.raises(AnalysisRunTransitionError, match="cannot transition"):
         service.mark_analysis_run_completed(analysis_run.id)
@@ -470,7 +493,10 @@ def test_summary_stage_rejects_terminal_run_before_provider_call(
     provider = _recording_summary_provider()
     service = AnalysisService(service_session, ai_provider=provider)
     analysis_run = _start_run(service, incident.public_id)
-    service.mark_analysis_run_completed(analysis_run.id)
+    service.mark_analysis_run_failed(
+        analysis_run.id,
+        error_message="Analysis failed safely.",
+    )
 
     with pytest.raises(AnalysisRunTransitionError, match="summary extraction"):
         service.run_summary_stage(analysis_run.id)
@@ -484,7 +510,7 @@ def test_timeline_stage_returns_direct_and_inferred_events_from_redacted_input(
     secret = "sk-production-secret-1234"
     incident = _persist_incident(
         service_session,
-        original_text=f"api_key={secret}\nCheckout failed",
+        original_text=(f"api_key={secret}\n2025-01-01T12:30:00+02:00 Checkout failed"),
     )
     provider = _recording_stage_provider("valid_timeline")
     service = AnalysisService(service_session, ai_provider=provider)
@@ -495,7 +521,7 @@ def test_timeline_stage_returns_direct_and_inferred_events_from_redacted_input(
     assert isinstance(result.output, TimelineOutputV1)
     direct_event, inferred_event = result.output.events
     assert direct_event.is_inferred is False
-    assert direct_event.timestamp == "time unknown"
+    assert direct_event.timestamp == "2025-01-01T12:30:00+02:00"
     assert inferred_event.is_inferred is True
     assert inferred_event.confidence == 70
     assert inferred_event.uncertainty_explanation is not None
@@ -584,3 +610,248 @@ def test_hypotheses_stage_rejects_materially_duplicate_titles_without_persistenc
     assert raw_response not in str(error_info.value)
     assert raw_response not in repr(error_info.value)
     _assert_no_stage_persistence(service_session, analysis_run.id)
+
+
+def test_core_analysis_persists_all_validated_outputs_and_audit_data(
+    database_session_factory: sessionmaker[Session],
+) -> None:
+    secret = "sk-production-secret-1234"
+    provider = _recording_core_provider()
+    with database_session_factory() as session:
+        incident = _persist_incident(
+            session,
+            original_text=(
+                f"api_key={secret}\n2025-01-01T12:30:00+02:00 Checkout failed"
+            ),
+        )
+        service = AnalysisService(session, ai_provider=provider)
+        analysis_run = _start_run(service, incident.public_id)
+
+        completed_run = service.run_core_analysis(analysis_run.id)
+        run_id = completed_run.id
+
+    with database_session_factory() as session:
+        persisted_run = session.scalar(
+            select(AnalysisRun)
+            .options(
+                selectinload(AnalysisRun.facts),
+                selectinload(AnalysisRun.timeline_events),
+                selectinload(AnalysisRun.hypotheses),
+            )
+            .where(AnalysisRun.id == run_id)
+        )
+        assert persisted_run is not None
+        assert persisted_run.status is AnalysisRunStatus.COMPLETED
+        assert persisted_run.incident.status is IncidentStatus.COMPLETED
+        assert persisted_run.completed_at is not None
+        assert persisted_run.error_message is None
+        assert persisted_run.provider_name == "fake"
+        assert persisted_run.model_name == "fixture-v1"
+        assert persisted_run.prompt_versions == {
+            "system": "v1",
+            "summary": "v1",
+            "timeline": "v1",
+            "hypotheses": "v1",
+        }
+        assert persisted_run.input_evidence_codes == ["E-001"]
+        assert persisted_run.raw_response is not None
+        audit_envelope = json.loads(persisted_run.raw_response)
+        stages = audit_envelope["stages"]
+        assert set(stages) == {"summary", "timeline", "hypotheses"}
+
+        fixture_bank = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+        for stage_name, fixture_name in (
+            ("summary", "valid_summary"),
+            ("timeline", "valid_timeline"),
+            ("hypotheses", "valid_hypotheses"),
+        ):
+            assert (
+                stages[stage_name]["raw_response"]
+                == fixture_bank[fixture_name]["raw_response"]
+            )
+            assert stages[stage_name]["parsed_output"]
+            assert stages[stage_name]["metadata"]["provider_name"] == "fake"
+            assert stages[stage_name]["metadata"]["model_name"] == "fixture-v1"
+
+        summary_output = SummaryOutputV1.model_validate(
+            stages["summary"]["parsed_output"]
+        )
+        assert summary_output.assumptions[0].claim == "A deployment may be related."
+        assert len(persisted_run.facts) == 1
+        assert persisted_run.facts[0].support_status is ClaimSupportStatus.UNSUPPORTED
+        assert persisted_run.facts[0].evidence_codes == ["E-001"]
+        assert len(persisted_run.timeline_events) == 2
+        direct_event = next(
+            event for event in persisted_run.timeline_events if not event.is_inferred
+        )
+        inferred_event = next(
+            event for event in persisted_run.timeline_events if event.is_inferred
+        )
+        assert direct_event.event_time == datetime(2025, 1, 1, 10, 30, tzinfo=UTC)
+        assert inferred_event.event_time is None
+        assert inferred_event.confidence == 70
+        timeline_output = TimelineOutputV1.model_validate(
+            stages["timeline"]["parsed_output"]
+        )
+        assert timeline_output.events[0].timestamp == "2025-01-01T12:30:00+02:00"
+        assert timeline_output.events[1].timestamp == "time unknown"
+        assert len(persisted_run.hypotheses) == 3
+        assert sorted(hypothesis.rank for hypothesis in persisted_run.hypotheses) == [
+            1,
+            2,
+            3,
+        ]
+
+    assert len(provider.requests) == 3
+    manifests = [request.evidence_manifest for request in provider.requests]
+    assert manifests[0] is manifests[1] is manifests[2]
+    assert all(secret not in request.model_dump_json() for request in provider.requests)
+
+
+def test_core_analysis_retains_failed_stage_audit_without_structured_rows(
+    database_session_factory: sessionmaker[Session],
+) -> None:
+    provider = _recording_core_provider(timeline_fixture="invalid_timeline_json")
+    with database_session_factory() as session:
+        incident = _persist_incident(session)
+        service = AnalysisService(session, ai_provider=provider)
+        analysis_run = _start_run(service, incident.public_id)
+        run_id = analysis_run.id
+
+        with pytest.raises(AIProviderExecutionError) as error_info:
+            service.run_core_analysis(run_id)
+
+        assert error_info.value.details.category is AIFailureCategory.MALFORMED_JSON
+        failed_raw_response = error_info.value.details.audit
+        assert failed_raw_response is not None
+        raw_response = failed_raw_response.raw_response
+        assert raw_response is not None
+        assert raw_response not in str(error_info.value)
+        assert raw_response not in repr(error_info.value)
+
+    with database_session_factory() as session:
+        persisted_run = session.scalar(
+            select(AnalysisRun)
+            .options(
+                selectinload(AnalysisRun.facts),
+                selectinload(AnalysisRun.timeline_events),
+                selectinload(AnalysisRun.hypotheses),
+            )
+            .where(AnalysisRun.id == run_id)
+        )
+        assert persisted_run is not None
+        assert persisted_run.status is AnalysisRunStatus.FAILED
+        assert persisted_run.incident.status is IncidentStatus.FAILED
+        assert persisted_run.completed_at is not None
+        assert persisted_run.error_message == "The AI provider returned malformed JSON."
+        assert persisted_run.prompt_versions == {
+            "system": "v1",
+            "summary": "v1",
+            "timeline": "v1",
+        }
+        assert persisted_run.input_evidence_codes == ["E-001"]
+        assert persisted_run.raw_response is not None
+        stages = json.loads(persisted_run.raw_response)["stages"]
+        assert set(stages) == {"summary", "timeline"}
+        assert stages["summary"]["parsed_output"]
+        assert stages["timeline"]["failure_category"] == "malformed_json"
+        fixture_bank = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+        assert (
+            stages["timeline"]["raw_response"]
+            == fixture_bank["invalid_timeline_json"]["raw_response"]
+        )
+        assert persisted_run.facts == []
+        assert persisted_run.timeline_events == []
+        assert persisted_run.hypotheses == []
+
+    assert [request.metadata.analysis_stage for request in provider.requests] == [
+        AnalysisStage.SUMMARY,
+        AnalysisStage.TIMELINE,
+    ]
+
+
+def test_core_analysis_rolls_back_structured_rows_before_failed_audit_persistence(
+    database_session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _recording_core_provider()
+    completed_flush_failed = False
+    with database_session_factory() as session:
+        incident = _persist_incident(session)
+        service = AnalysisService(session, ai_provider=provider)
+        analysis_run = _start_run(service, incident.public_id)
+        run_id = analysis_run.id
+        original_flush = session.flush
+
+        def fail_first_completed_result_flush() -> None:
+            nonlocal completed_flush_failed
+            has_pending_structured_rows = any(
+                isinstance(item, (Fact, TimelineEvent, Hypothesis))
+                for item in session.new
+            )
+            if has_pending_structured_rows and not completed_flush_failed:
+                completed_flush_failed = True
+                raise SQLAlchemyError("structured result flush unavailable")
+            original_flush()
+
+        flush = Mock(side_effect=fail_first_completed_result_flush)
+        monkeypatch.setattr(session, "flush", flush)
+
+        with pytest.raises(AnalysisPersistenceError) as error_info:
+            service.run_core_analysis(run_id)
+
+        assert completed_flush_failed is True
+        assert len(provider.requests) == 3
+        assert str(error_info.value) == (
+            "The completed analysis results could not be saved."
+        )
+        fixture_bank = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+        for fixture_name in (
+            "valid_summary",
+            "valid_timeline",
+            "valid_hypotheses",
+        ):
+            raw_response = fixture_bank[fixture_name]["raw_response"]
+            assert raw_response not in str(error_info.value)
+            assert raw_response not in repr(error_info.value)
+
+    with database_session_factory() as session:
+        persisted_run = session.scalar(
+            select(AnalysisRun)
+            .options(
+                selectinload(AnalysisRun.facts),
+                selectinload(AnalysisRun.timeline_events),
+                selectinload(AnalysisRun.hypotheses),
+            )
+            .where(AnalysisRun.id == run_id)
+        )
+        assert persisted_run is not None
+        assert persisted_run.status is AnalysisRunStatus.FAILED
+        assert persisted_run.incident.status is IncidentStatus.FAILED
+        assert persisted_run.error_message == (
+            "The completed analysis results could not be saved."
+        )
+        assert persisted_run.facts == []
+        assert persisted_run.timeline_events == []
+        assert persisted_run.hypotheses == []
+        assert persisted_run.prompt_versions == {
+            "system": "v1",
+            "summary": "v1",
+            "timeline": "v1",
+            "hypotheses": "v1",
+        }
+        assert persisted_run.input_evidence_codes == ["E-001"]
+        assert persisted_run.raw_response is not None
+        stages = json.loads(persisted_run.raw_response)["stages"]
+        assert set(stages) == {"summary", "timeline", "hypotheses"}
+        for stage_name, fixture_name in (
+            ("summary", "valid_summary"),
+            ("timeline", "valid_timeline"),
+            ("hypotheses", "valid_hypotheses"),
+        ):
+            assert (
+                stages[stage_name]["raw_response"]
+                == fixture_bank[fixture_name]["raw_response"]
+            )
+            assert stages[stage_name]["parsed_output"]
+            assert stages[stage_name]["metadata"]

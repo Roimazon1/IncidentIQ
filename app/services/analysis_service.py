@@ -1,5 +1,7 @@
 """Lifecycle and provider-neutral stages for auditable analysis runs."""
 
+import json
+from datetime import UTC, datetime
 from hashlib import sha256
 from typing import TypeVar
 
@@ -11,9 +13,13 @@ from sqlalchemy.orm import Session
 from app.models import (
     AnalysisRun,
     AnalysisRunStatus,
+    ClaimSupportStatus,
     EvidenceItem,
+    Fact,
+    Hypothesis,
     Incident,
     IncidentStatus,
+    TimelineEvent,
     utc_now,
 )
 from app.schemas.ai_outputs import (
@@ -34,7 +40,7 @@ from app.schemas.ai_provider import (
     SafeAIMetadata,
 )
 from app.schemas.evidence import EvidenceManifest, EvidenceManifestSource
-from app.services.ai_provider import AIProvider
+from app.services.ai_provider import AIProvider, AIProviderExecutionError
 from app.services.evidence_manifest_service import EvidenceManifestService
 from app.services.incident_service import IncidentService
 
@@ -68,6 +74,15 @@ class AnalysisProviderRequiredError(RuntimeError):
 
 class AnalysisStageOutputError(RuntimeError):
     """Raised when a provider violates the requested stage output contract."""
+
+    def __init__(
+        self,
+        explanation: str,
+        *,
+        raw_response: str | None = None,
+    ) -> None:
+        self._raw_response = raw_response
+        super().__init__(explanation)
 
 
 class AnalysisService:
@@ -113,11 +128,9 @@ class AnalysisService:
         """Move a running analysis to its successful terminal state."""
         analysis_run = self._get_analysis_run_or_raise(run_id)
         self._require_running(analysis_run, target_status=AnalysisRunStatus.COMPLETED)
+        self._require_complete_core_results(analysis_run)
 
-        analysis_run.status = AnalysisRunStatus.COMPLETED
-        analysis_run.completed_at = utc_now()
-        analysis_run.error_message = None
-        analysis_run.incident.status = IncidentStatus.COMPLETED
+        self._apply_completed_state(analysis_run)
         self._commit(
             analysis_run,
             failure_message="The completed analysis run could not be saved.",
@@ -138,14 +151,116 @@ class AnalysisService:
         analysis_run = self._get_analysis_run_or_raise(run_id)
         self._require_running(analysis_run, target_status=AnalysisRunStatus.FAILED)
 
-        analysis_run.status = AnalysisRunStatus.FAILED
-        analysis_run.completed_at = utc_now()
-        analysis_run.error_message = safe_error_message
-        analysis_run.incident.status = IncidentStatus.FAILED
+        self._apply_failed_state(analysis_run, error_message=safe_error_message)
         self._commit(
             analysis_run,
             failure_message="The failed analysis run could not be saved.",
         )
+        return analysis_run
+
+    def run_core_analysis(self, run_id: int) -> AnalysisRun:
+        """Run and atomically persist all required core analysis stages."""
+        analysis_run = self._get_analysis_run_or_raise(run_id)
+        self._require_running(analysis_run, operation="run core analysis")
+        evidence_manifest = self._build_redacted_evidence_manifest(analysis_run)
+        prompt_versions = {PromptName.SYSTEM.value: PromptVersion.V1.value}
+        input_evidence_codes = [item.id for item in evidence_manifest.evidence]
+        stage_records: dict[str, dict[str, object]] = {}
+        current_stage = AnalysisStage.SUMMARY
+
+        try:
+            prompt_versions[PromptName.SUMMARY.value] = PromptVersion.V1.value
+            summary_result = self._execute_stage(
+                analysis_run,
+                evidence_manifest,
+                task_prompt=PromptName.SUMMARY,
+                analysis_stage=AnalysisStage.SUMMARY,
+                output_schema=OutputSchemaIdentifier.SUMMARY_V1,
+                output_type=SummaryOutputV1,
+            )
+            stage_records[AnalysisStage.SUMMARY.value] = (
+                self._build_success_stage_record(summary_result)
+            )
+
+            current_stage = AnalysisStage.TIMELINE
+            prompt_versions[PromptName.TIMELINE.value] = PromptVersion.V1.value
+            timeline_result = self._execute_stage(
+                analysis_run,
+                evidence_manifest,
+                task_prompt=PromptName.TIMELINE,
+                analysis_stage=AnalysisStage.TIMELINE,
+                output_schema=OutputSchemaIdentifier.TIMELINE_V1,
+                output_type=TimelineOutputV1,
+            )
+            stage_records[AnalysisStage.TIMELINE.value] = (
+                self._build_success_stage_record(timeline_result)
+            )
+
+            current_stage = AnalysisStage.HYPOTHESES
+            prompt_versions[PromptName.HYPOTHESES.value] = PromptVersion.V1.value
+            hypotheses_result = self._execute_stage(
+                analysis_run,
+                evidence_manifest,
+                task_prompt=PromptName.HYPOTHESES,
+                analysis_stage=AnalysisStage.HYPOTHESES,
+                output_schema=OutputSchemaIdentifier.HYPOTHESES_V1,
+                output_type=HypothesesOutputV1,
+            )
+            self._require_materially_distinct_hypotheses(
+                hypotheses_result.output,
+                raw_response=hypotheses_result.audit.raw_response,
+            )
+            stage_records[AnalysisStage.HYPOTHESES.value] = (
+                self._build_success_stage_record(hypotheses_result)
+            )
+        except AIProviderExecutionError as exc:
+            audit = exc.details.audit
+            stage_records[current_stage.value] = {
+                "failure_category": exc.details.category.value,
+                "raw_response": None if audit is None else audit.raw_response,
+            }
+            self._persist_failed_analysis(
+                analysis_run,
+                error_message=exc.details.explanation,
+                prompt_versions=prompt_versions,
+                input_evidence_codes=input_evidence_codes,
+                stage_records=stage_records,
+            )
+            raise
+        except AnalysisStageOutputError as exc:
+            stage_records[current_stage.value] = {
+                "failure_category": "stage_output_validation",
+                "raw_response": exc._raw_response,
+            }
+            self._persist_failed_analysis(
+                analysis_run,
+                error_message=str(exc),
+                prompt_versions=prompt_versions,
+                input_evidence_codes=input_evidence_codes,
+                stage_records=stage_records,
+            )
+            raise
+
+        try:
+            self._persist_completed_analysis(
+                analysis_run,
+                summary_result=summary_result,
+                timeline_result=timeline_result,
+                hypotheses_result=hypotheses_result,
+                prompt_versions=prompt_versions,
+                input_evidence_codes=input_evidence_codes,
+                stage_records=stage_records,
+            )
+        except AnalysisPersistenceError as exc:
+            analysis_run = self._get_analysis_run_or_raise(run_id)
+            self._persist_failed_analysis(
+                analysis_run,
+                error_message=str(exc),
+                prompt_versions=prompt_versions,
+                input_evidence_codes=input_evidence_codes,
+                stage_records=stage_records,
+            )
+            raise
         return analysis_run
 
     def run_summary_stage(self, run_id: int) -> AIResult[SummaryOutputV1]:
@@ -283,8 +398,27 @@ class AnalysisService:
     ) -> AIResult[StageOutputT]:
         analysis_run = self._get_analysis_run_or_raise(run_id)
         self._require_running(analysis_run, operation=operation)
-        provider = self._require_ai_provider()
         evidence_manifest = self._build_redacted_evidence_manifest(analysis_run)
+        return self._execute_stage(
+            analysis_run,
+            evidence_manifest,
+            task_prompt=task_prompt,
+            analysis_stage=analysis_stage,
+            output_schema=output_schema,
+            output_type=output_type,
+        )
+
+    def _execute_stage(
+        self,
+        analysis_run: AnalysisRun,
+        evidence_manifest: EvidenceManifest,
+        *,
+        task_prompt: PromptName,
+        analysis_stage: AnalysisStage,
+        output_schema: OutputSchemaIdentifier,
+        output_type: type[StageOutputT],
+    ) -> AIResult[StageOutputT]:
+        provider = self._require_ai_provider()
         request = self._build_stage_request(
             analysis_run,
             evidence_manifest,
@@ -321,7 +455,8 @@ class AnalysisService:
             or metadata.model_name != analysis_run.model_name
         ):
             raise AnalysisStageOutputError(
-                "The AI provider returned an invalid analysis-stage output."
+                "The AI provider returned an invalid analysis-stage output.",
+                raw_response=result.audit.raw_response,
             )
         return AIResult[StageOutputT](
             output=output,
@@ -332,6 +467,8 @@ class AnalysisService:
     @staticmethod
     def _require_materially_distinct_hypotheses(
         output: HypothesesOutputV1,
+        *,
+        raw_response: str | None = None,
     ) -> None:
         normalized_titles = {
             " ".join(hypothesis.title.casefold().split())
@@ -339,8 +476,191 @@ class AnalysisService:
         }
         if len(normalized_titles) < 3:
             raise AnalysisStageOutputError(
-                "The AI provider returned fewer than three distinct hypotheses."
+                "The AI provider returned fewer than three distinct hypotheses.",
+                raw_response=raw_response,
             )
+
+    @staticmethod
+    def _build_success_stage_record(
+        result: AIResult[StageOutputT],
+    ) -> dict[str, object]:
+        return {
+            "metadata": result.metadata.model_dump(mode="json"),
+            "parsed_output": result.output.model_dump(mode="json"),
+            "raw_response": result.audit.raw_response,
+        }
+
+    def _persist_completed_analysis(
+        self,
+        analysis_run: AnalysisRun,
+        *,
+        summary_result: AIResult[SummaryOutputV1],
+        timeline_result: AIResult[TimelineOutputV1],
+        hypotheses_result: AIResult[HypothesesOutputV1],
+        prompt_versions: dict[str, str],
+        input_evidence_codes: list[str],
+        stage_records: dict[str, dict[str, object]],
+    ) -> None:
+        analysis_run.prompt_versions = dict(prompt_versions)
+        analysis_run.input_evidence_codes = list(input_evidence_codes)
+        analysis_run.raw_response = self._serialize_stage_records(stage_records)
+        analysis_run.facts = [
+            Fact(
+                claim=fact.claim,
+                support_status=ClaimSupportStatus.UNSUPPORTED,
+                confidence=fact.confidence,
+                evidence_codes=list(
+                    dict.fromkeys(reference.evidence_id for reference in fact.evidence)
+                ),
+                supporting_excerpt=next(
+                    (
+                        reference.excerpt
+                        for reference in fact.evidence
+                        if reference.excerpt is not None
+                    ),
+                    None,
+                ),
+            )
+            for fact in summary_result.output.facts
+        ]
+        analysis_run.timeline_events = [
+            TimelineEvent(
+                event_time=self._parse_timeline_instant(event.timestamp),
+                description=event.description,
+                evidence_codes=list(
+                    dict.fromkeys(reference.evidence_id for reference in event.evidence)
+                ),
+                is_inferred=event.is_inferred,
+                confidence=event.confidence,
+            )
+            for event in timeline_result.output.events
+        ]
+        analysis_run.hypotheses = [
+            Hypothesis(
+                rank=hypothesis.rank,
+                title=hypothesis.title,
+                explanation=hypothesis.explanation,
+                confidence=hypothesis.confidence,
+                supporting_evidence_codes=list(
+                    dict.fromkeys(
+                        evidence.reference.evidence_id
+                        for evidence in hypothesis.supporting_evidence
+                    )
+                ),
+                contradicting_evidence_codes=list(
+                    dict.fromkeys(
+                        evidence.reference.evidence_id
+                        for evidence in hypothesis.contradicting_evidence
+                    )
+                ),
+                missing_evidence=list(hypothesis.missing_evidence),
+                recommended_test=hypothesis.validation_test.description,
+                expected_true_result=hypothesis.validation_test.expected_if_true,
+                expected_false_result=hypothesis.validation_test.expected_if_false,
+            )
+            for hypothesis in hypotheses_result.output.hypotheses
+        ]
+        self._require_complete_core_results(analysis_run)
+        self._apply_completed_state(analysis_run)
+        self._commit(
+            analysis_run,
+            failure_message="The completed analysis results could not be saved.",
+        )
+
+    def _persist_failed_analysis(
+        self,
+        analysis_run: AnalysisRun,
+        *,
+        error_message: str,
+        prompt_versions: dict[str, str],
+        input_evidence_codes: list[str],
+        stage_records: dict[str, dict[str, object]],
+    ) -> None:
+        self._require_running(analysis_run, target_status=AnalysisRunStatus.FAILED)
+        analysis_run.prompt_versions = dict(prompt_versions)
+        analysis_run.input_evidence_codes = list(input_evidence_codes)
+        analysis_run.raw_response = self._serialize_stage_records(stage_records)
+        self._apply_failed_state(analysis_run, error_message=error_message)
+        self._commit(
+            analysis_run,
+            failure_message="The failed analysis run could not be saved.",
+        )
+
+    @staticmethod
+    def _serialize_stage_records(
+        stage_records: dict[str, dict[str, object]],
+    ) -> str:
+        return json.dumps(
+            {"stages": stage_records},
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+
+    @staticmethod
+    def _parse_timeline_instant(value: str) -> datetime | None:
+        candidate = f"{value[:-1]}+00:00" if value.endswith("Z") else value
+        try:
+            parsed = datetime.fromisoformat(candidate)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            return None
+        return parsed.astimezone(UTC)
+
+    @staticmethod
+    def _require_complete_core_results(analysis_run: AnalysisRun) -> None:
+        required_stages = {
+            AnalysisStage.SUMMARY.value,
+            AnalysisStage.TIMELINE.value,
+            AnalysisStage.HYPOTHESES.value,
+        }
+        required_prompts = {
+            PromptName.SYSTEM.value,
+            PromptName.SUMMARY.value,
+            PromptName.TIMELINE.value,
+            PromptName.HYPOTHESES.value,
+        }
+        try:
+            audit_envelope = json.loads(analysis_run.raw_response or "")
+            stages = audit_envelope["stages"]
+            stage_records_are_complete = all(
+                isinstance(stages[stage], dict)
+                and "metadata" in stages[stage]
+                and "parsed_output" in stages[stage]
+                and "raw_response" in stages[stage]
+                for stage in required_stages
+            )
+        except (json.JSONDecodeError, KeyError, TypeError):
+            stage_records_are_complete = False
+        if (
+            set(analysis_run.prompt_versions) != required_prompts
+            or not analysis_run.input_evidence_codes
+            or not stage_records_are_complete
+            or len(analysis_run.hypotheses) < 3
+        ):
+            raise AnalysisRunTransitionError(
+                f"Analysis run {analysis_run.id} cannot transition to COMPLETED "
+                "before all required stage results are available."
+            )
+
+    @staticmethod
+    def _apply_completed_state(analysis_run: AnalysisRun) -> None:
+        analysis_run.status = AnalysisRunStatus.COMPLETED
+        analysis_run.completed_at = utc_now()
+        analysis_run.error_message = None
+        analysis_run.incident.status = IncidentStatus.COMPLETED
+
+    @staticmethod
+    def _apply_failed_state(
+        analysis_run: AnalysisRun,
+        *,
+        error_message: str,
+    ) -> None:
+        analysis_run.status = AnalysisRunStatus.FAILED
+        analysis_run.completed_at = utc_now()
+        analysis_run.error_message = error_message
+        analysis_run.incident.status = IncidentStatus.FAILED
 
     @staticmethod
     def _build_stage_request(

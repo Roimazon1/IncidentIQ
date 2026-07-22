@@ -5,7 +5,11 @@
   },
   "valid_timeline": {
     "output_schema": "timeline_v1",
-    "raw_response": "{\"events\":[{\"timestamp\":\"time unknown\",\"description\":\"The checkout log records a failed request.\",\"evidence\":[{\"evidence_id\":\"E-001\",\"line_range\":\"1-2\",\"excerpt\":\"checkout failed\"}],\"is_inferred\":false,\"confidence\":90},{\"timestamp\":\"time unknown\",\"description\":\"Checkout failures may have started before the captured log entry.\",\"evidence\":[{\"evidence_id\":\"E-001\",\"line_range\":\"1-2\"}],\"is_inferred\":true,\"confidence\":70,\"uncertainty_explanation\":\"Only one captured failure is available, so the start time cannot be established.\"}]}"
+    "raw_response": "{\"events\":[{\"timestamp\":\"2025-01-01T12:30:00+02:00\",\"description\":\"The checkout log records a failed request.\",\"evidence\":[{\"evidence_id\":\"E-001\",\"line_range\":\"1-2\",\"excerpt\":\"checkout failed\"}],\"is_inferred\":false,\"confidence\":90},{\"timestamp\":\"time unknown\",\"description\":\"Checkout failures may have started before the captured log entry.\",\"evidence\":[{\"evidence_id\":\"E-001\",\"line_range\":\"1-2\"}],\"is_inferred\":true,\"confidence\":70,\"uncertainty_explanation\":\"Only one captured failure is available, so the start time cannot be established.\"}]}"
+  },
+  "invalid_timeline_json": {
+    "output_schema": "timeline_v1",
+    "raw_response": "{\"events\":"
   },
   "valid_hypotheses": {
     "output_schema": "hypotheses_v1",
