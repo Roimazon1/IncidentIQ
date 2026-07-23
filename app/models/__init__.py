@@ -4,10 +4,13 @@ from app.models.analysis import (
     AnalysisRun,
     BiasFlag,
     Fact,
+    HumanNote,
     Hypothesis,
+    HypothesisConfidenceOverride,
     RecommendedAction,
     RUNNING_ANALYSIS_INDEX_NAME,
     TimelineEvent,
+    TimelineEventReview,
     running_analysis_per_incident_index,
 )
 from app.models.enums import (
@@ -40,7 +43,9 @@ __all__ = [
     "generate_evidence_code",
     "generate_incident_public_id",
     "Hypothesis",
+    "HypothesisConfidenceOverride",
     "HypothesisStatus",
+    "HumanNote",
     "Incident",
     "IncidentStatus",
     "RecommendedAction",
@@ -49,6 +54,7 @@ __all__ = [
     "running_analysis_per_incident_index",
     "TimestampMixin",
     "TimelineEvent",
+    "TimelineEventReview",
     "UTCDateTime",
     "utc_now",
 ]

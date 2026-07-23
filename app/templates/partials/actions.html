@@ -1,0 +1,67 @@
+<section
+  class="card border-info shadow-sm mb-4"
+  id="next-actions-section"
+  aria-labelledby="next-actions-heading"
+>
+  <div class="card-body p-4">
+    <h2 class="h4" id="next-actions-heading">Next actions</h2>
+    <p class="text-body-secondary">
+      Recommended actions require human approval. IncidentIQ never executes
+      commands or remediation automatically.
+    </p>
+    {% if analysis_run.actions %}
+      <div class="vstack gap-3">
+        {% for action in analysis_run.actions %}
+          <article class="border rounded p-3">
+            <div class="d-flex flex-wrap justify-content-between gap-3">
+              <h3 class="h5 mb-0">{{ action.description }}</h3>
+              <span class="badge
+                {% if action.priority in ("CRITICAL", "HIGH") %}
+                  text-bg-danger
+                {% elif action.priority == "MEDIUM" %}
+                  text-bg-warning
+                {% else %}
+                  text-bg-secondary
+                {% endif %}
+              ">
+                {{ action.priority }} priority
+              </span>
+            </div>
+            <div class="alert alert-info py-2 mt-3 mb-3" role="note">
+              Proposed for human review only. This action has not been executed.
+            </div>
+            <dl class="mb-0">
+              <dt>Owner role</dt>
+              <dd>{{ action.owner_role }}</dd>
+              <dt>Linked hypotheses</dt>
+              <dd>
+                {% for hypothesis in action.hypotheses | sort(attribute="rank") %}
+                  <span class="badge text-bg-light border">
+                    #{{ hypothesis.rank }} {{ hypothesis.title }}
+                  </span>
+                {% else %}
+                  <span class="text-danger">No linked hypothesis is available.</span>
+                {% endfor %}
+              </dd>
+              <dt>Evidence references</dt>
+              <dd>
+                {{ evidence_reference_links(
+                  action.evidence_codes,
+                  incident,
+                  page.evidence_by_code,
+                  "Evidence references for recommended action"
+                ) }}
+              </dd>
+              <dt>Expected information gained</dt>
+              <dd>{{ action.expected_information }}</dd>
+              <dt>Operational risk</dt>
+              <dd class="mb-0">{{ action.operational_risk }}</dd>
+            </dl>
+          </article>
+        {% endfor %}
+      </div>
+    {% else %}
+      <p class="mb-0">No recommended actions are available for this analysis run.</p>
+    {% endif %}
+  </div>
+</section>

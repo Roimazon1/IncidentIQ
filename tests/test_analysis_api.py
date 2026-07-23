@@ -14,8 +14,10 @@ from app.models import (
     AnalysisRun,
     AnalysisRunStatus,
     ClaimSupportStatus,
+    EvidenceItem,
     Fact,
     IncidentStatus,
+    RecommendedAction,
 )
 from app.routers import analysis as analysis_router
 from app.schemas.ai_outputs import (
@@ -76,6 +78,33 @@ class _OutOfRangeSummaryProvider:
         )
 
 
+class _MissingEvidenceSummaryProvider:
+    def __init__(self, delegate: FakeAIProvider) -> None:
+        self._delegate = delegate
+
+    def generate(self, request: AIRequest) -> AIResult[AIOutput]:
+        result = self._delegate.generate(request)
+        if request.metadata.analysis_stage is not AnalysisStage.SUMMARY:
+            return result
+        output = result.output
+        assert isinstance(output, SummaryOutputV1)
+        fact = output.facts[0]
+        missing_reference = fact.evidence[0].model_copy(update={"evidence_id": "E-999"})
+        return AIResult[AIOutput](
+            output=output.model_copy(
+                update={
+                    "facts": (
+                        fact.model_copy(
+                            update={"evidence": (missing_reference,)},
+                        ),
+                    )
+                }
+            ),
+            metadata=result.metadata,
+            audit=result.audit,
+        )
+
+
 class _HighConfidenceTimelineProvider:
     def __init__(self, delegate: FakeAIProvider) -> None:
         self._delegate = delegate
@@ -94,6 +123,35 @@ class _HighConfidenceTimelineProvider:
             output=modified_output,
             metadata=result.metadata,
             audit=SuccessAuditData(raw_response=modified_output.model_dump_json()),
+        )
+
+
+class _MissingTimelineEvidenceProvider:
+    def __init__(self, delegate: FakeAIProvider) -> None:
+        self._delegate = delegate
+
+    def generate(self, request: AIRequest) -> AIResult[AIOutput]:
+        result = self._delegate.generate(request)
+        if request.metadata.analysis_stage is not AnalysisStage.TIMELINE:
+            return result
+        output = result.output
+        assert isinstance(output, TimelineOutputV1)
+        event = output.events[0]
+        missing_reference = event.evidence[0].model_copy(
+            update={"evidence_id": "E-999"}
+        )
+        modified_output = output.model_copy(
+            update={
+                "events": (
+                    event.model_copy(update={"evidence": (missing_reference,)}),
+                    *output.events[1:],
+                )
+            }
+        )
+        return AIResult[AIOutput](
+            output=modified_output,
+            metadata=result.metadata,
+            audit=result.audit,
         )
 
 
@@ -130,6 +188,45 @@ class _ContradictingHypothesisProvider:
             output=modified_output,
             metadata=result.metadata,
             audit=SuccessAuditData(raw_response=modified_output.model_dump_json()),
+        )
+
+
+class _MissingHypothesisEvidenceProvider:
+    def __init__(self, delegate: FakeAIProvider) -> None:
+        self._delegate = delegate
+
+    def generate(self, request: AIRequest) -> AIResult[AIOutput]:
+        result = self._delegate.generate(request)
+        if request.metadata.analysis_stage is not AnalysisStage.HYPOTHESES:
+            return result
+        output = result.output
+        assert isinstance(output, HypothesesOutputV1)
+        first_hypothesis = output.hypotheses[0]
+        supporting_evidence = first_hypothesis.supporting_evidence[0]
+        missing_reference = supporting_evidence.reference.model_copy(
+            update={"evidence_id": "E-999"}
+        )
+        modified_hypothesis = first_hypothesis.model_copy(
+            update={
+                "supporting_evidence": (
+                    supporting_evidence.model_copy(
+                        update={"reference": missing_reference}
+                    ),
+                )
+            }
+        )
+        modified_output = output.model_copy(
+            update={
+                "hypotheses": (
+                    modified_hypothesis,
+                    *output.hypotheses[1:],
+                )
+            }
+        )
+        return AIResult[AIOutput](
+            output=modified_output,
+            metadata=result.metadata,
+            audit=result.audit,
         )
 
 
@@ -212,13 +309,49 @@ def test_fake_analysis_can_be_run_and_reopened_without_exposing_raw_audit(
 
     assert detail_response.status_code == 200
     assert "COMPLETED" in detail_response.text
+    assert "Human review required" in detail_response.text
+    assert "AI-generated analysis" in detail_response.text
+    assert 'aria-label="Analysis uncertainty key"' in detail_response.text
+    assert "Facts: evidence-validated" in detail_response.text
+    assert "Assumptions: unverified" in detail_response.text
+    assert "Hypotheses: require testing" in detail_response.text
+    assert "Actions: proposed, never auto-executed" in detail_response.text
+    assert 'aria-label="Analysis sections"' in detail_response.text
+    for section_id in (
+        "summary-section",
+        "evidence-section",
+        "facts-assumptions-section",
+        "timeline-section",
+        "hypotheses-section",
+        "next-actions-section",
+        "reasoning-risks-section",
+        "ai-audit-section",
+    ):
+        assert f'id="{section_id}"' in detail_response.text
+        assert f'href="#{section_id}"' in detail_response.text
     assert "Checkout requests are failing." in detail_response.text
+    assert "Review incident evidence" in detail_response.text
+    assert (
+        'href="http://testserver/incidents/INC-000001/evidence/new?tab=saved"'
+        in detail_response.text
+    )
     assert "Confirmed facts" in detail_response.text
     assert "The redacted checkout log contains a failure." in detail_response.text
     assert "SUPPORTED" in detail_response.text
+    assert "Validated evidence" in detail_response.text
+    assert "Validated cited excerpt" in detail_response.text
+    assert (
+        'href="http://testserver/incidents/INC-000001/evidence/E-001"'
+        in detail_response.text
+    )
+    assert 'aria-label="Open evidence E-001 from checkout.log"' in detail_response.text
     assert "Unconfirmed AI claims" in detail_response.text
     assert "No unconfirmed claims were retained." in detail_response.text
     assert "A deployment may be related." in detail_response.text
+    assert "UNVERIFIED" in detail_response.text
+    assert "Evidence needed" in detail_response.text
+    assert "Compare pre-deployment behavior." in detail_response.text
+    assert "Review available evidence" in detail_response.text
     assert "Timeline" in detail_response.text
     assert "Direct" in detail_response.text
     assert "Inferred" in detail_response.text
@@ -231,6 +364,17 @@ def test_fake_analysis_can_be_run_and_reopened_without_exposing_raw_audit(
     assert "Database connection pool exhaustion" in detail_response.text
     assert "Recent deployment regression" in detail_response.text
     assert "External payment dependency failure" in detail_response.text
+    assert "Evidence for" in detail_response.text
+    assert "Evidence against" in detail_response.text
+    assert "Missing evidence" in detail_response.text
+    assert "Recommended validation test" in detail_response.text
+    assert "Expected if true" in detail_response.text
+    assert "Expected if false" in detail_response.text
+    assert 'aria-label="Supporting evidence for hypothesis 1"' in detail_response.text
+    assert "Pool saturation aligns with the failures." in detail_response.text
+    assert "The pool retained available capacity during failures." in (
+        detail_response.text
+    )
     assert "not confirmed root causes" in detail_response.text
     assert "Adversarial critique" in detail_response.text
     assert "The top hypothesis is only weakly distinguished" in detail_response.text
@@ -239,6 +383,7 @@ def test_fake_analysis_can_be_run_and_reopened_without_exposing_raw_audit(
     assert "critic confidence 35%" in detail_response.text
     assert "Reasoning risks and fallacies" in detail_response.text
     assert "possible risks to investigate, not accusations" in detail_response.text
+    assert "Possible effect and location" in detail_response.text
     assert "Confirmation bias" in detail_response.text
     assert "Anchoring bias" in detail_response.text
     assert "Automation bias" in detail_response.text
@@ -261,6 +406,20 @@ def test_fake_analysis_can_be_run_and_reopened_without_exposing_raw_audit(
     assert "fake / fixture-v1" in detail_response.text
     assert "summary v1" in detail_response.text
     assert "E-001" in detail_response.text
+    assert "Next actions" in detail_response.text
+    assert "No recommended actions are available for this analysis run." in (
+        detail_response.text
+    )
+    assert "AI audit" in detail_response.text
+    assert "Run status" in detail_response.text
+    assert "Started" in detail_response.text
+    assert "Completed" in detail_response.text
+    assert "Validation flags" in detail_response.text
+    assert "SUPPORTED 1" in detail_response.text
+    assert "Inferred timeline events" in detail_response.text
+    assert "Hypotheses with contradictions" in detail_response.text
+    assert "Unavailable evidence references" in detail_response.text
+    assert "None detected" in detail_response.text
     assert "local-secret" not in detail_response.text
     assert '"raw_response"' not in detail_response.text
     assert '"hypotheses":[' not in detail_response.text
@@ -294,6 +453,95 @@ def test_fake_analysis_can_be_run_and_reopened_without_exposing_raw_audit(
             (2, "Recent deployment regression", 45),
             (3, "External payment dependency failure", 35),
         ]
+
+
+def test_old_run_does_not_link_evidence_added_after_its_input_snapshot(
+    database_client: TestClient,
+    database_session_factory: sessionmaker[Session],
+) -> None:
+    public_id = _create_ready_incident(database_client)
+    start_response = database_client.post(
+        f"/incidents/{public_id}/analysis",
+        follow_redirects=False,
+    )
+    assert start_response.status_code == 303
+
+    with database_session_factory() as session:
+        analysis_run = session.scalar(
+            select(AnalysisRun)
+            .options(selectinload(AnalysisRun.hypotheses))
+            .where(AnalysisRun.id == 1)
+        )
+        assert analysis_run is not None
+        assert analysis_run.input_evidence_codes == ["E-001"]
+        raw_response_before = analysis_run.raw_response
+        action = RecommendedAction(
+            description="Inspect database pool saturation metrics.",
+            priority="HIGH",
+            hypotheses=[analysis_run.hypotheses[0]],
+            evidence_codes=["E-001", "E-002"],
+            owner_role="Site reliability engineer",
+            expected_information="Whether pool exhaustion coincided with failures.",
+            operational_risk="Read-only metrics review; low operational risk.",
+        )
+        analysis_run.actions.append(action)
+        session.commit()
+
+    initial_detail_response = database_client.get(start_response.headers["location"])
+
+    assert initial_detail_response.status_code == 200
+    assert "E-002 unavailable" in initial_detail_response.text
+    assert "/evidence/E-002" not in initial_detail_response.text
+    assert 'data-validation-flag="unavailable-evidence-references"' in (
+        initial_detail_response.text
+    )
+    assert 'data-validation-count="1"' in initial_detail_response.text
+
+    evidence_response = database_client.post(
+        f"/incidents/{public_id}/evidence/text",
+        data={
+            "source_name": "post-run.log",
+            "original_text": "api_key=later-secret\nadditional evidence",
+            "evidence_type": "APPLICATION_LOG",
+        },
+        follow_redirects=False,
+    )
+    assert evidence_response.status_code == 303
+
+    detail_response = database_client.get(start_response.headers["location"])
+
+    assert detail_response.status_code == 200
+    assert "Inspect database pool saturation metrics." in detail_response.text
+    assert "HIGH priority" in detail_response.text
+    assert "Proposed for human review only" in detail_response.text
+    assert "This action has not been executed." in detail_response.text
+    assert "Site reliability engineer" in detail_response.text
+    assert "#1 Database connection pool exhaustion" in detail_response.text
+    assert "Whether pool exhaustion coincided with failures." in detail_response.text
+    assert "Read-only metrics review; low operational risk." in detail_response.text
+    assert (
+        'href="http://testserver/incidents/INC-000001/evidence/E-001"'
+        in detail_response.text
+    )
+    assert "E-002 unavailable" in detail_response.text
+    assert 'data-validation-flag="unavailable-evidence-references"' in (
+        detail_response.text
+    )
+    assert 'data-validation-count="1"' in detail_response.text
+    assert "/evidence/E-002" not in detail_response.text
+    assert "local-secret" not in detail_response.text
+    assert "later-secret" not in detail_response.text
+    assert '"raw_response"' not in detail_response.text
+
+    with database_session_factory() as session:
+        evidence_codes = session.scalars(
+            select(EvidenceItem.evidence_code).order_by(EvidenceItem.evidence_code)
+        ).all()
+        persisted_run = session.get(AnalysisRun, 1)
+        assert evidence_codes == ["E-001", "E-002"]
+        assert persisted_run is not None
+        assert persisted_run.input_evidence_codes == ["E-001"]
+        assert persisted_run.raw_response == raw_response_before
 
 
 def test_inferred_provider_confidence_is_capped_after_auditing(
@@ -347,15 +595,78 @@ def test_inferred_provider_confidence_is_capped_after_auditing(
 
     assert start_response.status_code == 303
     assert detail_response.status_code == 200
+    assert "Direct" in detail_response.text
+    assert "Inferred" in detail_response.text
     assert "Confidence 88%" in detail_response.text
     assert "Confidence 70%" in detail_response.text
     assert "Confidence 95%" not in detail_response.text
+    assert (
+        'aria-label="Evidence references for this timeline event"'
+        in detail_response.text
+    )
+    assert (
+        f'href="http://testserver/incidents/{public_id}/evidence/E-001"'
+        in detail_response.text
+    )
     assert "Inference uncertainty" in detail_response.text
     assert (
         "Only one captured failure is available, so the start time cannot be "
         "established."
     ) in detail_response.text
     assert '"raw_response"' not in detail_response.text
+
+
+def test_timeline_marks_missing_evidence_unavailable_without_broken_link_or_leak(
+    database_client: TestClient,
+    database_session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = PromptRegistry()
+    provider = _MissingTimelineEvidenceProvider(
+        FakeAIProvider.from_file_set(
+            FIXTURE_PATH,
+            CORE_FIXTURES,
+            prompt_resolver=registry.resolve_content,
+            prompt_bundle_validator=registry.validate_bundle,
+        )
+    )
+    monkeypatch.setattr(
+        analysis_router,
+        "build_configured_analysis_service",
+        _configured_service_builder(provider),
+    )
+    public_id = _create_ready_incident(database_client)
+
+    start_response = database_client.post(
+        f"/incidents/{public_id}/analysis",
+        follow_redirects=False,
+    )
+
+    with database_session_factory() as session:
+        analysis_run = session.scalar(
+            select(AnalysisRun).options(selectinload(AnalysisRun.timeline_events))
+        )
+        assert analysis_run is not None
+        direct_event = next(
+            event for event in analysis_run.timeline_events if not event.is_inferred
+        )
+        assert direct_event.evidence_codes == ["E-999"]
+        direct_confidence = direct_event.confidence
+
+    detail_response = database_client.get(start_response.headers["location"])
+
+    assert detail_response.status_code == 200
+    assert "The checkout log records a failed request." in detail_response.text
+    assert "Direct" in detail_response.text
+    assert f"Confidence {direct_confidence}%" in detail_response.text
+    assert "E-999 unavailable" in detail_response.text
+    assert (
+        f'href="http://testserver/incidents/{public_id}/evidence/E-999"'
+        not in detail_response.text
+    )
+    assert '"raw_response"' not in detail_response.text
+    assert '"events":[' not in detail_response.text
+    assert "local-secret" not in detail_response.text
 
 
 def test_out_of_range_fact_is_separate_from_confirmed_facts(
@@ -398,10 +709,76 @@ def test_out_of_range_fact_is_separate_from_confirmed_facts(
     assert "No AI claims have validated support." in detail_response.text
     assert "Unconfirmed AI claims" in detail_response.text
     assert "UNSUPPORTED" in detail_response.text
+    assert 'class="badge text-bg-danger"' in detail_response.text
+    assert "Cited evidence" in detail_response.text
+    assert (
+        f'href="http://testserver/incidents/{public_id}/evidence/E-001"'
+        in detail_response.text
+    )
+    assert "Validated cited excerpt" not in detail_response.text
     assert detail_response.text.count(claim) == 1
     assert detail_response.text.index(claim) > detail_response.text.index(
         "Unconfirmed AI claims"
     )
+
+
+def test_missing_evidence_fact_remains_unconfirmed_without_broken_link_or_leak(
+    database_client: TestClient,
+    database_session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = PromptRegistry()
+    provider = _MissingEvidenceSummaryProvider(
+        FakeAIProvider.from_file_set(
+            FIXTURE_PATH,
+            CORE_FIXTURES,
+            prompt_resolver=registry.resolve_content,
+            prompt_bundle_validator=registry.validate_bundle,
+        )
+    )
+    monkeypatch.setattr(
+        analysis_router,
+        "build_configured_analysis_service",
+        _configured_service_builder(provider),
+    )
+    public_id = _create_ready_incident(database_client)
+
+    start_response = database_client.post(
+        f"/incidents/{public_id}/analysis",
+        follow_redirects=False,
+    )
+
+    with database_session_factory() as session:
+        fact = session.scalar(select(Fact))
+        assert fact is not None
+        assert fact.support_status is ClaimSupportStatus.UNSUPPORTED
+        assert fact.evidence_codes == ["E-999"]
+        assert fact.supporting_excerpt is None
+
+    detail_response = database_client.get(start_response.headers["location"])
+    claim = "The redacted checkout log contains a failure."
+
+    assert detail_response.status_code == 200
+    assert "Unconfirmed AI claims" in detail_response.text
+    assert detail_response.text.count(claim) == 1
+    assert detail_response.text.index(claim) > detail_response.text.index(
+        "Unconfirmed AI claims"
+    )
+    assert "UNSUPPORTED" in detail_response.text
+    assert "E-999 unavailable" in detail_response.text
+    assert 'data-claim-support-status="UNSUPPORTED"' in detail_response.text
+    assert 'data-validation-count="1"' in detail_response.text
+    assert 'data-validation-flag="unavailable-evidence-references"' in (
+        detail_response.text
+    )
+    assert (
+        f'href="http://testserver/incidents/{public_id}/evidence/E-999"'
+        not in detail_response.text
+    )
+    assert "Validated cited excerpt" not in detail_response.text
+    assert '"raw_response"' not in detail_response.text
+    assert '"facts":[' not in detail_response.text
+    assert "local-secret" not in detail_response.text
 
 
 def test_valid_contradiction_remains_visible_with_adjusted_confidence(
@@ -445,10 +822,75 @@ def test_valid_contradiction_remains_visible_with_adjusted_confidence(
 
     assert detail_response.status_code == 200
     assert "Confidence 50%" in detail_response.text
-    assert "Contradicting evidence" in detail_response.text
+    assert "Evidence against" in detail_response.text
+    assert (
+        'aria-label="Contradicting evidence for hypothesis 1"' in detail_response.text
+    )
+    assert (
+        f'href="http://testserver/incidents/{public_id}/evidence/E-001"'
+        in detail_response.text
+    )
     assert "E-001" in detail_response.text
     assert "Confidence is reduced deterministically" in detail_response.text
+    assert 'data-validation-flag="hypotheses-with-contradictions"' in (
+        detail_response.text
+    )
+    assert 'data-validation-count="1"' in detail_response.text
     assert '"raw_response"' not in detail_response.text
+
+
+def test_hypothesis_marks_missing_supporting_evidence_without_broken_link_or_leak(
+    database_client: TestClient,
+    database_session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = PromptRegistry()
+    provider = _MissingHypothesisEvidenceProvider(
+        FakeAIProvider.from_file_set(
+            FIXTURE_PATH,
+            CORE_FIXTURES,
+            prompt_resolver=registry.resolve_content,
+            prompt_bundle_validator=registry.validate_bundle,
+        )
+    )
+    monkeypatch.setattr(
+        analysis_router,
+        "build_configured_analysis_service",
+        _configured_service_builder(provider),
+    )
+    public_id = _create_ready_incident(database_client)
+
+    start_response = database_client.post(
+        f"/incidents/{public_id}/analysis",
+        follow_redirects=False,
+    )
+
+    with database_session_factory() as session:
+        analysis_run = session.scalar(
+            select(AnalysisRun).options(selectinload(AnalysisRun.hypotheses))
+        )
+        assert analysis_run is not None
+        top_hypothesis = min(analysis_run.hypotheses, key=lambda item: item.rank)
+        assert top_hypothesis.supporting_evidence_codes == ["E-999"]
+        top_confidence = top_hypothesis.confidence
+
+    detail_response = database_client.get(start_response.headers["location"])
+
+    assert detail_response.status_code == 200
+    assert "Database connection pool exhaustion" in detail_response.text
+    assert f"Confidence {top_confidence}%" in detail_response.text
+    assert "Evidence for" in detail_response.text
+    assert "E-999 unavailable" in detail_response.text
+    assert (
+        f'href="http://testserver/incidents/{public_id}/evidence/E-999"'
+        not in detail_response.text
+    )
+    assert "Evidence against" in detail_response.text
+    assert "Missing evidence" in detail_response.text
+    assert "Recommended validation test" in detail_response.text
+    assert '"raw_response"' not in detail_response.text
+    assert '"hypotheses":[' not in detail_response.text
+    assert "local-secret" not in detail_response.text
 
 
 def test_running_analysis_renders_pending_page(

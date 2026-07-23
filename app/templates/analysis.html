@@ -2,6 +2,57 @@
 
 {% block title %}Analysis {{ analysis_run.id }} | {{ app_name }}{% endblock %}
 
+{% macro evidence_reference_links(evidence_codes, incident, evidence_by_code, aria_label) %}
+  <div class="d-flex flex-wrap gap-2" aria-label="{{ aria_label }}">
+    {% for evidence_code in evidence_codes %}
+      {% set evidence = evidence_by_code.get(evidence_code) %}
+      {% if evidence %}
+        <a
+          class="badge rounded-pill text-bg-light border text-decoration-none"
+          href="{{ url_for(
+            'evidence_preview',
+            public_id=incident.public_id,
+            evidence_code=evidence_code
+          ) }}"
+          aria-label="Open evidence {{ evidence_code }} from {{ evidence.source_name }}"
+        >
+          {{ evidence_code }}
+        </a>
+      {% else %}
+        <span class="badge rounded-pill text-bg-danger">
+          {{ evidence_code }} unavailable
+        </span>
+      {% endif %}
+    {% else %}
+      <span class="small text-danger">No evidence was cited.</span>
+    {% endfor %}
+  </div>
+{% endmacro %}
+
+{% macro fact_evidence_links(fact, incident, evidence_by_code) %}
+  <div class="mt-2">
+    <div class="small fw-semibold text-body-secondary mb-1">
+      {% if fact.support_status.value == "SUPPORTED" %}
+        Validated evidence
+      {% else %}
+        Cited evidence
+      {% endif %}
+    </div>
+    {{ evidence_reference_links(
+      fact.evidence_codes,
+      incident,
+      evidence_by_code,
+      "Evidence references for this claim"
+    ) }}
+  </div>
+  {% if fact.supporting_excerpt %}
+    <blockquote class="border-start border-3 ps-3 mt-3 mb-0">
+      <div class="small fw-semibold text-body-secondary">Validated cited excerpt</div>
+      <p class="small mb-0">{{ fact.supporting_excerpt }}</p>
+    </blockquote>
+  {% endif %}
+{% endmacro %}
+
 {% block content %}
   <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4">
     <div>
@@ -26,207 +77,84 @@
     </div>
   {% endif %}
 
-  {% if page.summary_output %}
-    <section class="card border-0 shadow-sm mb-4" aria-labelledby="summary-heading">
-      <div class="card-body p-4">
-        <h2 class="h4" id="summary-heading">Summary</h2>
-        <p>{{ page.summary_output.summary.text }}</p>
-        <dl class="mb-0">
-          <dt>Impact</dt>
-          <dd>{{ page.summary_output.summary.impact }}</dd>
-          <dt>Uncertainty</dt>
-          <dd>{{ page.summary_output.summary.uncertainty }}</dd>
-          {% if page.summary_output.unknowns %}
-            <dt>Unknowns</dt>
-            <dd class="mb-0">
-              <ul class="mb-0">
-                {% for unknown in page.summary_output.unknowns %}
-                  <li>{{ unknown }}</li>
-                {% endfor %}
-              </ul>
-            </dd>
-          {% endif %}
-        </dl>
+  <aside class="alert alert-info border-0 shadow-sm mb-4" aria-labelledby="review-guidance-heading">
+    <h2 class="h5" id="review-guidance-heading">Human review required</h2>
+    <p>
+      This AI-generated analysis does not confirm a root cause or authorize an
+      operational change.
+    </p>
+    <div class="d-flex flex-wrap gap-2" aria-label="Analysis uncertainty key">
+      <span class="badge text-bg-success">Facts: evidence-validated</span>
+      <span class="badge text-bg-warning">Assumptions: unverified</span>
+      <span class="badge text-bg-secondary">Hypotheses: require testing</span>
+      <span class="badge text-bg-info">Actions: proposed, never auto-executed</span>
+    </div>
+  </aside>
+
+  <nav
+    class="card border-0 shadow-sm mb-4"
+    aria-label="Analysis sections"
+  >
+    <div class="card-body d-flex flex-wrap align-items-center gap-2 p-3">
+      <span class="small fw-semibold text-body-secondary me-1">On this page</span>
+      <a class="btn btn-sm btn-outline-secondary" href="#summary-section">Summary</a>
+      <a class="btn btn-sm btn-outline-secondary" href="#human-notes-section">
+        Human notes
+      </a>
+      <a class="btn btn-sm btn-outline-secondary" href="#evidence-section">Evidence</a>
+      <a class="btn btn-sm btn-outline-secondary" href="#facts-assumptions-section">
+        Facts &amp; assumptions
+      </a>
+      <a class="btn btn-sm btn-outline-secondary" href="#timeline-section">Timeline</a>
+      <a class="btn btn-sm btn-outline-secondary" href="#hypotheses-section">Hypotheses</a>
+      <a class="btn btn-sm btn-outline-secondary" href="#next-actions-section">
+        Next actions
+      </a>
+      <a class="btn btn-sm btn-outline-secondary" href="#reasoning-risks-section">
+        Reasoning risks
+      </a>
+      <a class="btn btn-sm btn-outline-secondary" href="#ai-audit-section">AI audit</a>
+    </div>
+  </nav>
+
+  {% include "partials/summary.html" %}
+
+  <section
+    class="card border-0 shadow-sm mb-4"
+    id="evidence-section"
+    aria-labelledby="evidence-heading"
+  >
+    <div class="card-body p-4">
+      <div class="d-flex flex-wrap justify-content-between align-items-start gap-3">
+        <div>
+          <h2 class="h4" id="evidence-heading">Evidence</h2>
+          <p class="text-body-secondary mb-0">
+            These evidence identifiers define the redacted input set used for this
+            run. Review the saved incident evidence before accepting a claim.
+          </p>
+        </div>
+        <a
+          class="btn btn-sm btn-outline-primary"
+          href="{{ url_for('new_evidence_form', public_id=incident.public_id) }}?tab=saved"
+        >
+          Review incident evidence
+        </a>
       </div>
-    </section>
-  {% endif %}
-
-  <div class="row g-4 mb-4">
-    <div class="col-lg-6">
-      <section class="card border-success shadow-sm mb-4" aria-labelledby="facts-heading">
-        <div class="card-body p-4">
-          <h2 class="h4" id="facts-heading">Confirmed facts</h2>
-          <p class="small text-body-secondary">
-            Only claims with fully validated evidence references appear here.
-          </p>
-          {% if page.confirmed_facts %}
-            <ul class="list-group list-group-flush">
-              {% for fact in page.confirmed_facts %}
-                <li class="list-group-item px-0">
-                  <div class="d-flex justify-content-between gap-3">
-                    <span>{{ fact.claim }}</span>
-                    <span class="badge text-bg-success">{{ fact.support_status.value }}</span>
-                  </div>
-                  <div class="small text-body-secondary mt-2">
-                    Confidence {{ fact.confidence }}% · Evidence {{ fact.evidence_codes | join(", ") }}
-                  </div>
-                </li>
-              {% endfor %}
-            </ul>
-          {% else %}
-            <p class="mb-0">No AI claims have validated support.</p>
-          {% endif %}
-        </div>
-      </section>
-
-      <section class="card border-warning shadow-sm" aria-labelledby="unconfirmed-claims-heading">
-        <div class="card-body p-4">
-          <h2 class="h4" id="unconfirmed-claims-heading">Unconfirmed AI claims</h2>
-          <p class="small text-body-secondary">
-            These claims are not confirmed facts and require additional evidence or review.
-          </p>
-          {% if page.unconfirmed_claims %}
-            <ul class="list-group list-group-flush">
-              {% for fact in page.unconfirmed_claims %}
-                <li class="list-group-item px-0">
-                  <div class="d-flex justify-content-between gap-3">
-                    <span>{{ fact.claim }}</span>
-                    <span class="badge {% if fact.support_status.value == 'CONTRADICTED' %}text-bg-danger{% else %}text-bg-warning{% endif %}">
-                      {{ fact.support_status.value }}
-                    </span>
-                  </div>
-                  <div class="small text-body-secondary mt-2">
-                    Confidence {{ fact.confidence }}% · Evidence {{ fact.evidence_codes | join(", ") }}
-                  </div>
-                </li>
-              {% endfor %}
-            </ul>
-          {% else %}
-            <p class="mb-0">No unconfirmed claims were retained.</p>
-          {% endif %}
-        </div>
-      </section>
-    </div>
-
-    <div class="col-lg-6">
-      <section class="card border-0 shadow-sm h-100" aria-labelledby="assumptions-heading">
-        <div class="card-body p-4">
-          <h2 class="h4" id="assumptions-heading">Assumptions</h2>
-          {% if page.summary_output and page.summary_output.assumptions %}
-            <ul class="list-group list-group-flush">
-              {% for assumption in page.summary_output.assumptions %}
-                <li class="list-group-item px-0">
-                  <div>{{ assumption.claim }}</div>
-                  <div class="small text-body-secondary mt-1">{{ assumption.reason }}</div>
-                  {% if assumption.required_evidence %}
-                    <div class="small mt-2">
-                      Needed: {{ assumption.required_evidence | join(", ") }}
-                    </div>
-                  {% endif %}
-                </li>
-              {% endfor %}
-            </ul>
-          {% else %}
-            <p class="mb-0">No assumptions were retained.</p>
-          {% endif %}
-        </div>
-      </section>
-    </div>
-  </div>
-
-  <section class="card border-0 shadow-sm mb-4" aria-labelledby="timeline-heading">
-    <div class="card-body p-4">
-      <h2 class="h4" id="timeline-heading">Timeline</h2>
-      {% if analysis_run.timeline_events %}
-        <ol class="list-group list-group-numbered">
-          {% for event in analysis_run.timeline_events %}
-            <li class="list-group-item d-flex justify-content-between align-items-start gap-3">
-              <div class="ms-2 me-auto">
-                <div>{{ event.description }}</div>
-                <div class="small text-body-secondary mt-1">
-                  {% if event.event_time %}
-                    <time datetime="{{ event.event_time.isoformat() }}">
-                      {{ event.event_time | incident_datetime }}
-                    </time>
-                  {% else %}
-                    Time unknown
-                  {% endif %}
-                  · Confidence {{ event.confidence }}%
-                  · Evidence {{ event.evidence_codes | join(", ") }}
-                </div>
-              </div>
-              <span class="badge {% if event.is_inferred %}text-bg-warning{% else %}text-bg-primary{% endif %}">
-                {% if event.is_inferred %}Inferred{% else %}Direct{% endif %}
-              </span>
-            </li>
-          {% endfor %}
-        </ol>
-        {% if page.timeline_output %}
-          {% set inferred_events = page.timeline_output.events | selectattr("is_inferred") | list %}
-          {% if inferred_events %}
-            <div class="alert alert-warning mt-3 mb-0" role="note">
-              <h3 class="h6">Inference uncertainty</h3>
-              <ul class="mb-0">
-                {% for event in inferred_events %}
-                  <li>
-                    {{ event.description }}:
-                    {{ event.uncertainty_explanation }}
-                  </li>
-                {% endfor %}
-              </ul>
-            </div>
-          {% endif %}
-        {% endif %}
-      {% else %}
-        <p class="mb-0">No timeline events were retained.</p>
-      {% endif %}
-    </div>
-  </section>
-
-  <section class="card border-0 shadow-sm mb-4" aria-labelledby="hypotheses-heading">
-    <div class="card-body p-4">
-      <h2 class="h4" id="hypotheses-heading">Ranked hypotheses</h2>
-      <p class="small text-body-secondary">
-        Hypotheses are plausible explanations to test, not confirmed root causes.
-        Confidence is reduced deterministically when validated contradicting evidence is present.
-      </p>
-      <div class="vstack gap-3">
-        {% for hypothesis in analysis_run.hypotheses | sort(attribute="rank") %}
-          <article class="border rounded p-3">
-            <div class="d-flex flex-wrap justify-content-between gap-3">
-              <h3 class="h5 mb-0">#{{ hypothesis.rank }} {{ hypothesis.title }}</h3>
-              <span class="badge text-bg-secondary">Confidence {{ hypothesis.confidence }}%</span>
-            </div>
-            <p class="mt-3">{{ hypothesis.explanation }}</p>
-            <dl class="mb-0">
-              <dt>Supporting evidence</dt>
-              <dd>
-                {% if hypothesis.supporting_evidence_codes %}
-                  {{ hypothesis.supporting_evidence_codes | join(", ") }}
-                {% else %}
-                  None cited
-                {% endif %}
-              </dd>
-              <dt>Contradicting evidence</dt>
-              <dd>
-                {% if hypothesis.contradicting_evidence_codes %}
-                  {{ hypothesis.contradicting_evidence_codes | join(", ") }}
-                {% else %}
-                  None cited; absence is not confirmation
-                {% endif %}
-              </dd>
-              <dt>Missing evidence</dt>
-              <dd>{{ hypothesis.missing_evidence | join(", ") }}</dd>
-              <dt>Recommended validation test</dt>
-              <dd class="mb-0">{{ hypothesis.recommended_test }}</dd>
-            </dl>
-          </article>
+      <div class="d-flex flex-wrap gap-2 mt-3" aria-label="Input evidence identifiers">
+        {% for evidence_code in analysis_run.input_evidence_codes %}
+          <span class="badge text-bg-light border">{{ evidence_code }}</span>
         {% else %}
-          <p class="mb-0">No hypotheses were retained.</p>
+          <span class="text-body-secondary">No input evidence identifiers are available.</span>
         {% endfor %}
       </div>
     </div>
   </section>
+
+  {% include "partials/facts.html" %}
+
+  {% include "partials/timeline.html" %}
+
+  {% include "partials/hypotheses.html" %}
 
   {% if page.critic_output %}
     <section class="card border-warning shadow-sm mb-4" aria-labelledby="critic-heading">
@@ -292,39 +220,9 @@
     </section>
   {% endif %}
 
-  <section class="card border-warning shadow-sm mb-4" aria-labelledby="reasoning-risks-heading">
-    <div class="card-body p-4">
-      <h2 class="h4" id="reasoning-risks-heading">Reasoning risks and fallacies</h2>
-      <p class="text-body-secondary">
-        These are possible risks to investigate, not accusations or confirmed errors.
-      </p>
-      {% if analysis_run.bias_flags %}
-        <div class="vstack gap-3">
-          {% for risk in analysis_run.bias_flags %}
-            <article class="border rounded p-3">
-              <div class="d-flex flex-wrap justify-content-between gap-3">
-                <h3 class="h5 mb-0">{{ risk.bias_type }}</h3>
-                <span class="badge text-bg-warning">Confidence {{ risk.confidence }}%</span>
-              </div>
-              <div class="mt-3">
-                {% for explanation_line in risk.explanation.split("\n") %}
-                  <div>{{ explanation_line }}</div>
-                {% endfor %}
-              </div>
-              <dl class="mt-3 mb-0">
-                <dt>Warning trigger</dt>
-                <dd>{{ risk.trigger }}</dd>
-                <dt>Mitigation</dt>
-                <dd class="mb-0">{{ risk.mitigation }}</dd>
-              </dl>
-            </article>
-          {% endfor %}
-        </div>
-      {% else %}
-        <p class="mb-0">No reasoning-risk warnings were retained.</p>
-      {% endif %}
-    </div>
-  </section>
+  {% include "partials/actions.html" %}
+
+  {% include "partials/reasoning_risks.html" %}
 
   <section class="card border-info shadow-sm mb-4" aria-labelledby="open-questions-heading">
     <div class="card-body p-4">
@@ -361,25 +259,5 @@
     </div>
   </section>
 
-  <section class="card border-0 shadow-sm" aria-labelledby="audit-heading">
-    <div class="card-body p-4">
-      <h2 class="h4" id="audit-heading">Analysis traceability</h2>
-      <dl class="row mb-0">
-        <dt class="col-sm-3">Provider and model</dt>
-        <dd class="col-sm-9">{{ analysis_run.provider_name }} / {{ analysis_run.model_name }}</dd>
-        <dt class="col-sm-3">Prompt versions</dt>
-        <dd class="col-sm-9">
-          {% for prompt_name, prompt_version in analysis_run.prompt_versions | dictsort %}
-            <span class="badge text-bg-light border">{{ prompt_name }} {{ prompt_version }}</span>
-          {% else %}
-            Not available
-          {% endfor %}
-        </dd>
-        <dt class="col-sm-3">Input evidence</dt>
-        <dd class="col-sm-9 mb-0">
-          {{ analysis_run.input_evidence_codes | join(", ") if analysis_run.input_evidence_codes else "Not available" }}
-        </dd>
-      </dl>
-    </div>
-  </section>
+  {% include "partials/ai_audit.html" %}
 {% endblock %}

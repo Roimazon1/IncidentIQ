@@ -29,7 +29,7 @@ from app.models.enums import (
     FactReviewStatus,
     HypothesisStatus,
 )
-from app.models.mixins import utc_now
+from app.models.mixins import TimestampMixin, utc_now
 from app.models.types import UTCDateTime
 
 if TYPE_CHECKING:
@@ -144,6 +144,12 @@ class AnalysisRun(Base):
         cascade="all, delete-orphan",
         single_parent=True,
     )
+    human_notes: Mapped[list[HumanNote]] = relationship(
+        back_populates="analysis_run",
+        cascade="all, delete-orphan",
+        single_parent=True,
+        order_by="HumanNote.created_at",
+    )
 
 
 RUNNING_ANALYSIS_INDEX_NAME = "uq_analysis_runs_one_running_per_incident"
@@ -242,6 +248,29 @@ class TimelineEvent(Base):
     analysis_run: Mapped[AnalysisRun] = relationship(
         back_populates="timeline_events",
     )
+    human_review: Mapped[TimelineEventReview | None] = relationship(
+        back_populates="timeline_event",
+        cascade="all, delete-orphan",
+        single_parent=True,
+        uselist=False,
+    )
+
+
+class TimelineEventReview(TimestampMixin, Base):
+    """A human-edited timeline description that preserves the AI original."""
+
+    __tablename__ = "timeline_event_reviews"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    timeline_event_id: Mapped[int] = mapped_column(
+        ForeignKey("timeline_events.id", ondelete="CASCADE"),
+        unique=True,
+        index=True,
+        nullable=False,
+    )
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+
+    timeline_event: Mapped[TimelineEvent] = relationship(back_populates="human_review")
 
 
 class Hypothesis(Base):
@@ -309,6 +338,35 @@ class Hypothesis(Base):
         secondary=recommended_action_hypotheses,
         back_populates="hypotheses",
     )
+    confidence_override: Mapped[HypothesisConfidenceOverride | None] = relationship(
+        back_populates="hypothesis",
+        cascade="all, delete-orphan",
+        single_parent=True,
+        uselist=False,
+    )
+
+
+class HypothesisConfidenceOverride(TimestampMixin, Base):
+    """A human confidence value stored separately from the AI confidence."""
+
+    __tablename__ = "hypothesis_confidence_overrides"
+    __table_args__ = (
+        CheckConstraint(
+            "confidence BETWEEN 0 AND 100",
+            name="ck_hypothesis_confidence_overrides_range",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    hypothesis_id: Mapped[int] = mapped_column(
+        ForeignKey("hypotheses.id", ondelete="CASCADE"),
+        unique=True,
+        index=True,
+        nullable=False,
+    )
+    confidence: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    hypothesis: Mapped[Hypothesis] = relationship(back_populates="confidence_override")
 
 
 class BiasFlag(Base):
@@ -373,3 +431,19 @@ class RecommendedAction(Base):
         secondary=recommended_action_hypotheses,
         back_populates="recommended_actions",
     )
+
+
+class HumanNote(TimestampMixin, Base):
+    """A human-authored note attached to one analysis run."""
+
+    __tablename__ = "human_notes"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    analysis_run_id: Mapped[int] = mapped_column(
+        ForeignKey("analysis_runs.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    note: Mapped[str] = mapped_column(Text, nullable=False)
+
+    analysis_run: Mapped[AnalysisRun] = relationship(back_populates="human_notes")
