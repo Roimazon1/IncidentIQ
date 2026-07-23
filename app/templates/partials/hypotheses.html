@@ -21,7 +21,10 @@
               {% if confidence_override %}
                 <span class="badge text-bg-info">Human override</span>
               {% endif %}
-              <span class="badge text-bg-light border">
+              <span
+                class="badge text-bg-light border"
+                data-hypothesis-review-status="{{ hypothesis.status.value }}"
+              >
                 Review status {{ hypothesis.status.value }}
               </span>
             </div>

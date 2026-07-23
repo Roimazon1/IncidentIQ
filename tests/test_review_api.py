@@ -25,6 +25,11 @@ from app.models import (
 )
 
 
+RAW_AUDIT_ENVELOPE = (
+    '{"internal":"raw-review-secret","spacing": [1, 2],"nested":{"verbatim":true}}\n'
+)
+
+
 @dataclass(frozen=True, slots=True)
 class ReviewableAnalysis:
     public_id: str
@@ -62,7 +67,7 @@ def _create_analysis(
     analysis_run = AnalysisRun(
         model_name="fixture-v1",
         provider_name="fake",
-        raw_response='{"internal":"raw-review-secret"}',
+        raw_response=RAW_AUDIT_ENVELOPE,
         status=status,
         completed_at=utc_now() if status is AnalysisRunStatus.COMPLETED else None,
         facts=[fact],
@@ -99,6 +104,39 @@ def _analysis_url(analysis: ReviewableAnalysis) -> str:
     return f"/incidents/{analysis.public_id}/analysis/{analysis.run_id}"
 
 
+def _assert_ai_values_and_raw_audit_unchanged(
+    session_factory: sessionmaker[Session],
+    analysis: ReviewableAnalysis,
+) -> None:
+    with session_factory() as session:
+        analysis_run = session.get(AnalysisRun, analysis.run_id)
+        fact = session.get(Fact, analysis.fact_id)
+        timeline_event = session.get(TimelineEvent, analysis.timeline_event_id)
+        hypothesis = session.get(Hypothesis, analysis.hypothesis_id)
+
+        assert analysis_run is not None
+        assert analysis_run.raw_response is not None
+        assert analysis_run.raw_response.encode("utf-8") == (
+            RAW_AUDIT_ENVELOPE.encode("utf-8")
+        )
+        assert fact is not None
+        assert fact.claim == "Checkout requests returned errors."
+        assert fact.support_status is ClaimSupportStatus.SUPPORTED
+        assert fact.confidence == 92
+        assert fact.evidence_codes == []
+        assert timeline_event is not None
+        assert timeline_event.description == "AI timeline: checkout errors began."
+        assert timeline_event.confidence == 88
+        assert timeline_event.evidence_codes == []
+        assert hypothesis is not None
+        assert hypothesis.title == "Database pool exhaustion"
+        assert hypothesis.explanation == "Connections may have been unavailable."
+        assert hypothesis.confidence == 63
+        assert hypothesis.recommended_test == "Inspect pool utilization."
+        assert hypothesis.expected_true_result == "Pool saturation is visible."
+        assert hypothesis.expected_false_result == "Capacity remained available."
+
+
 def test_analysis_page_exposes_human_review_controls_without_raw_audit(
     database_client: TestClient,
     database_session_factory: sessionmaker[Session],
@@ -128,6 +166,12 @@ def test_analysis_page_exposes_human_review_controls_without_raw_audit(
     )
     assert "raw-review-secret" not in response.text
     assert '"raw_response"' not in response.text
+    assert 'data-hypothesis-review-status="UNTESTED"' in response.text
+    assert 'data-hypothesis-review-status="CONFIRMED_BY_HUMAN"' not in (response.text)
+    _assert_ai_values_and_raw_audit_unchanged(
+        database_session_factory,
+        analysis,
+    )
 
 
 @pytest.mark.parametrize(
@@ -159,6 +203,10 @@ def test_fact_review_decisions_persist_and_are_visible(
     assert response.headers["location"] == (
         f"{_analysis_url(analysis)}?notice=analysis-review-updated"
         "#facts-assumptions-section"
+    )
+    _assert_ai_values_and_raw_audit_unchanged(
+        database_session_factory,
+        analysis,
     )
     with database_session_factory() as session:
         fact = session.get(Fact, analysis.fact_id)
@@ -192,6 +240,10 @@ def test_timeline_human_edit_preserves_and_displays_the_ai_description(
     )
 
     assert response.status_code == 303
+    _assert_ai_values_and_raw_audit_unchanged(
+        database_session_factory,
+        analysis,
+    )
     with database_session_factory() as session:
         event = session.get(TimelineEvent, analysis.timeline_event_id)
         review = session.scalar(
@@ -226,6 +278,10 @@ def test_human_note_is_persisted_and_escaped(
     )
 
     assert response.status_code == 303
+    _assert_ai_values_and_raw_audit_unchanged(
+        database_session_factory,
+        analysis,
+    )
     with database_session_factory() as session:
         notes = session.scalars(select(HumanNote)).all()
         assert [item.note for item in notes] == [note]
@@ -255,6 +311,10 @@ def test_every_hypothesis_status_and_confidence_override_persists_visibly(
     )
 
     assert response.status_code == 303
+    _assert_ai_values_and_raw_audit_unchanged(
+        database_session_factory,
+        analysis,
+    )
     with database_session_factory() as session:
         hypothesis = session.get(Hypothesis, analysis.hypothesis_id)
         confidence_override = session.scalar(
@@ -275,6 +335,145 @@ def test_every_hypothesis_status_and_confidence_override_persists_visibly(
     assert "Original AI confidence retained: 63%." in detail_response.text
     assert f"Review status {hypothesis_status.value}" in detail_response.text
     assert "raw-review-secret" not in detail_response.text
+
+
+def test_repeated_review_updates_preserve_ai_values_and_reopen_with_latest_values(
+    database_client: TestClient,
+    database_session_factory: sessionmaker[Session],
+) -> None:
+    analysis = _create_analysis(database_session_factory)
+    fact_url = f"{_analysis_url(analysis)}/facts/{analysis.fact_id}/review"
+    timeline_url = (
+        f"{_analysis_url(analysis)}/timeline/{analysis.timeline_event_id}/review"
+    )
+    hypothesis_url = (
+        f"{_analysis_url(analysis)}/hypotheses/{analysis.hypothesis_id}/review"
+    )
+
+    review_submissions = [
+        (fact_url, {"decision": "ACCEPTED"}),
+        (fact_url, {"decision": "REJECTED"}),
+        (fact_url, {"decision": "RECLASSIFIED_AS_ASSUMPTION"}),
+        (timeline_url, {"description": "First human timeline edit."}),
+        (timeline_url, {"description": "Latest human timeline edit."}),
+        (f"{_analysis_url(analysis)}/notes", {"note": "First human note."}),
+        (f"{_analysis_url(analysis)}/notes", {"note": "Second human note."}),
+        (
+            hypothesis_url,
+            {"confidence": "54", "hypothesis_status": "SUPPORTED"},
+        ),
+        (
+            hypothesis_url,
+            {"confidence": "37", "hypothesis_status": "WEAKENED"},
+        ),
+    ]
+    for url, form_data in review_submissions:
+        response = database_client.post(
+            url,
+            data=form_data,
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        _assert_ai_values_and_raw_audit_unchanged(
+            database_session_factory,
+            analysis,
+        )
+
+    with database_session_factory() as session:
+        fact = session.get(Fact, analysis.fact_id)
+        timeline_reviews = session.scalars(select(TimelineEventReview)).all()
+        human_notes = session.scalars(select(HumanNote).order_by(HumanNote.id)).all()
+        hypothesis = session.get(Hypothesis, analysis.hypothesis_id)
+        confidence_overrides = session.scalars(
+            select(HypothesisConfidenceOverride)
+        ).all()
+        assert fact is not None
+        assert fact.human_status is FactReviewStatus.RECLASSIFIED_AS_ASSUMPTION
+        assert [item.description for item in timeline_reviews] == [
+            "Latest human timeline edit."
+        ]
+        assert [item.note for item in human_notes] == [
+            "First human note.",
+            "Second human note.",
+        ]
+        assert hypothesis is not None
+        assert hypothesis.status is HypothesisStatus.WEAKENED
+        assert [item.confidence for item in confidence_overrides] == [37]
+
+    reopened_response = database_client.get(_analysis_url(analysis))
+    assert reopened_response.status_code == 200
+    assert "Human-reviewed fact reclassified as assumption" in (reopened_response.text)
+    assert "Latest human timeline edit." in reopened_response.text
+    assert "First human timeline edit." not in reopened_response.text
+    assert "Original AI description retained" in reopened_response.text
+    assert "First human note." in reopened_response.text
+    assert "Second human note." in reopened_response.text
+    assert "Confidence 37%" in reopened_response.text
+    assert "Original AI confidence retained: 63%." in reopened_response.text
+    assert 'data-hypothesis-review-status="WEAKENED"' in reopened_response.text
+    assert "raw-review-secret" not in reopened_response.text
+    assert '"raw_response"' not in reopened_response.text
+
+
+def test_confirmed_by_human_requires_explicit_scoped_submission(
+    database_client: TestClient,
+    database_session_factory: sessionmaker[Session],
+) -> None:
+    first = _create_analysis(database_session_factory, public_id="INC-000001")
+    second = _create_analysis(database_session_factory, public_id="INC-000002")
+
+    initial_response = database_client.get(_analysis_url(first))
+    assert 'data-hypothesis-review-status="UNTESTED"' in initial_response.text
+    assert 'data-hypothesis-review-status="CONFIRMED_BY_HUMAN"' not in (
+        initial_response.text
+    )
+
+    cross_run_response = database_client.post(
+        (f"{_analysis_url(first)}/hypotheses/{second.hypothesis_id}/review"),
+        data={
+            "confidence": "90",
+            "hypothesis_status": "CONFIRMED_BY_HUMAN",
+        },
+    )
+    assert cross_run_response.status_code == 404
+    _assert_ai_values_and_raw_audit_unchanged(
+        database_session_factory,
+        first,
+    )
+    _assert_ai_values_and_raw_audit_unchanged(
+        database_session_factory,
+        second,
+    )
+    with database_session_factory() as session:
+        first_hypothesis = session.get(Hypothesis, first.hypothesis_id)
+        second_hypothesis = session.get(Hypothesis, second.hypothesis_id)
+        assert first_hypothesis is not None
+        assert first_hypothesis.status is HypothesisStatus.UNTESTED
+        assert second_hypothesis is not None
+        assert second_hypothesis.status is HypothesisStatus.UNTESTED
+
+    explicit_response = database_client.post(
+        (f"{_analysis_url(first)}/hypotheses/{first.hypothesis_id}/review"),
+        data={
+            "confidence": "90",
+            "hypothesis_status": "CONFIRMED_BY_HUMAN",
+        },
+        follow_redirects=False,
+    )
+    assert explicit_response.status_code == 303
+    _assert_ai_values_and_raw_audit_unchanged(
+        database_session_factory,
+        first,
+    )
+
+    reopened_response = database_client.get(_analysis_url(first))
+    assert (
+        'data-hypothesis-review-status="CONFIRMED_BY_HUMAN"' in reopened_response.text
+    )
+    assert "Human override" in reopened_response.text
+    assert "Original AI confidence retained: 63%." in reopened_response.text
+    assert "raw-review-secret" not in reopened_response.text
+    assert '"raw_response"' not in reopened_response.text
 
 
 def test_invalid_review_values_and_object_ids_are_rejected_safely(
@@ -323,6 +522,10 @@ def test_invalid_review_values_and_object_ids_are_rejected_safely(
         blank_note_response,
     ):
         assert "raw-review-secret" not in response.text
+    _assert_ai_values_and_raw_audit_unchanged(
+        database_session_factory,
+        analysis,
+    )
     with database_session_factory() as session:
         assert session.scalar(select(TimelineEventReview)) is None
         assert session.scalar(select(HumanNote)) is None
@@ -355,6 +558,14 @@ def test_cross_run_and_cross_incident_review_attempts_are_not_found(
     ]
 
     assert [response.status_code for response in responses] == [404, 404, 404, 404]
+    _assert_ai_values_and_raw_audit_unchanged(
+        database_session_factory,
+        first,
+    )
+    _assert_ai_values_and_raw_audit_unchanged(
+        database_session_factory,
+        second,
+    )
     with database_session_factory() as session:
         second_fact = session.get(Fact, second.fact_id)
         second_timeline_review = session.scalar(
@@ -388,6 +599,10 @@ def test_non_completed_analysis_rejects_review_transition(
     assert response.status_code == 409
     assert "must be completed before human review" in response.text
     assert "raw-review-secret" not in response.text
+    _assert_ai_values_and_raw_audit_unchanged(
+        database_session_factory,
+        analysis,
+    )
     with database_session_factory() as session:
         fact = session.get(Fact, analysis.fact_id)
         assert fact is not None
