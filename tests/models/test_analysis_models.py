@@ -15,12 +15,15 @@ from app.models import (
     ClaimSupportStatus,
     Fact,
     FactReviewStatus,
+    HumanNote,
     Hypothesis,
+    HypothesisConfidenceOverride,
     HypothesisStatus,
     Incident,
     RecommendedAction,
     RUNNING_ANALYSIS_INDEX_NAME,
     TimelineEvent,
+    TimelineEventReview,
 )
 from app.models.analysis import recommended_action_hypotheses
 
@@ -114,6 +117,27 @@ def test_analysis_models_expose_locked_fields_and_relationships() -> None:
             "expected_information",
             "operational_risk",
         },
+        TimelineEventReview: {
+            "id",
+            "timeline_event_id",
+            "description",
+            "created_at",
+            "updated_at",
+        },
+        HypothesisConfidenceOverride: {
+            "id",
+            "hypothesis_id",
+            "confidence",
+            "created_at",
+            "updated_at",
+        },
+        HumanNote: {
+            "id",
+            "analysis_run_id",
+            "note",
+            "created_at",
+            "updated_at",
+        },
     }
 
     for model, column_names in expected_columns.items():
@@ -124,20 +148,31 @@ def test_analysis_models_expose_locked_fields_and_relationships() -> None:
         "bias_flags",
         "facts",
         "hypotheses",
+        "human_notes",
         "incident",
         "reports",
         "timeline_events",
     }
-    for model in (Fact, TimelineEvent, BiasFlag):
+    for model in (Fact, BiasFlag):
         assert set(inspect(model).relationships.keys()) == {"analysis_run"}
+    assert set(inspect(TimelineEvent).relationships.keys()) == {
+        "analysis_run",
+        "human_review",
+    }
     assert set(inspect(Hypothesis).relationships.keys()) == {
         "analysis_run",
+        "confidence_override",
         "recommended_actions",
     }
     assert set(inspect(RecommendedAction).relationships.keys()) == {
         "analysis_run",
         "hypotheses",
     }
+    assert set(inspect(TimelineEventReview).relationships.keys()) == {"timeline_event"}
+    assert set(inspect(HypothesisConfidenceOverride).relationships.keys()) == {
+        "hypothesis"
+    }
+    assert set(inspect(HumanNote).relationships.keys()) == {"analysis_run"}
 
     assert AnalysisRun.__table__.c.status.type.enum_class is AnalysisRunStatus
     assert Fact.__table__.c.support_status.type.enum_class is ClaimSupportStatus
@@ -168,6 +203,15 @@ def test_analysis_models_expose_locked_fields_and_relationships() -> None:
     assert "ck_facts_confidence_range" in fact_constraint_names
     assert "ck_hypotheses_positive_rank" in hypothesis_constraint_names
     assert "ck_hypotheses_confidence_range" in hypothesis_constraint_names
+    confidence_override_constraint_names = {
+        constraint.name
+        for constraint in HypothesisConfidenceOverride.__table__.constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+    assert (
+        "ck_hypothesis_confidence_overrides_range"
+        in confidence_override_constraint_names
+    )
     assert any(
         isinstance(constraint, UniqueConstraint)
         and tuple(column.name for column in constraint.columns)
@@ -451,6 +495,79 @@ def test_analysis_defaults_persist_across_structured_results(
         assert loaded_run.actions[0].evidence_codes == []
 
 
+def test_human_reviews_round_trip_without_overwriting_ai_values(
+    model_session_factory: sessionmaker[Session],
+) -> None:
+    fact = Fact(
+        claim="Checkout returned errors",
+        support_status=ClaimSupportStatus.SUPPORTED,
+        confidence=95,
+        human_status=FactReviewStatus.REJECTED,
+    )
+    timeline_event = TimelineEvent(
+        description="AI-generated timeline description",
+        confidence=90,
+        human_review=TimelineEventReview(
+            description="Human-reviewed timeline description",
+        ),
+    )
+    hypothesis = Hypothesis(
+        rank=1,
+        title="Database pool exhaustion",
+        explanation="Connections were unavailable",
+        confidence=70,
+        recommended_test="Compare pool settings",
+        expected_true_result="Pool limit decreased",
+        expected_false_result="Pool settings unchanged",
+        status=HypothesisStatus.WEAKENED,
+        confidence_override=HypothesisConfidenceOverride(confidence=45),
+    )
+    analysis_run = AnalysisRun(
+        model_name="fake-analysis-v1",
+        provider_name="fake",
+        status=AnalysisRunStatus.COMPLETED,
+        facts=[fact],
+        timeline_events=[timeline_event],
+        hypotheses=[hypothesis],
+        human_notes=[HumanNote(note="Human reviewer requested pool metrics.")],
+    )
+    incident = Incident(
+        public_id="INC-000001",
+        name="Checkout failures",
+        description="Intermittent checkout errors",
+        affected_service="checkout",
+        analysis_runs=[analysis_run],
+    )
+
+    with model_session_factory() as session:
+        session.add(incident)
+        session.flush()
+        analysis_run_id = analysis_run.id
+        session.commit()
+
+    with model_session_factory() as session:
+        loaded_run = session.get(AnalysisRun, analysis_run_id)
+        assert loaded_run is not None
+        assert loaded_run.facts[0].claim == "Checkout returned errors"
+        assert loaded_run.facts[0].human_status is FactReviewStatus.REJECTED
+        assert (
+            loaded_run.timeline_events[0].description
+            == "AI-generated timeline description"
+        )
+        assert loaded_run.timeline_events[0].human_review is not None
+        assert (
+            loaded_run.timeline_events[0].human_review.description
+            == "Human-reviewed timeline description"
+        )
+        assert loaded_run.hypotheses[0].confidence == 70
+        assert loaded_run.hypotheses[0].confidence_override is not None
+        assert loaded_run.hypotheses[0].confidence_override.confidence == 45
+        assert loaded_run.hypotheses[0].status is HypothesisStatus.WEAKENED
+        assert loaded_run.human_notes[0].note == (
+            "Human reviewer requested pool metrics."
+        )
+
+
 def test_analysis_confidence_outside_locked_range_is_rejected(
     model_session_factory: sessionmaker[Session],
 ) -> None:
@@ -657,6 +774,9 @@ def test_database_level_incident_delete_cascades_through_analysis_results(
         timeline_event = TimelineEvent(
             description="Errors began",
             confidence=90,
+            human_review=TimelineEventReview(
+                description="Human-reviewed errors began",
+            ),
         )
         hypothesis = Hypothesis(
             rank=1,
@@ -666,6 +786,7 @@ def test_database_level_incident_delete_cascades_through_analysis_results(
             recommended_test="Compare pool settings",
             expected_true_result="Pool limit decreased",
             expected_false_result="Pool settings unchanged",
+            confidence_override=HypothesisConfidenceOverride(confidence=55),
         )
         bias_flag = BiasFlag(
             bias_type="ANCHORING",
@@ -690,6 +811,7 @@ def test_database_level_incident_delete_cascades_through_analysis_results(
             hypotheses=[hypothesis],
             bias_flags=[bias_flag],
             actions=[action],
+            human_notes=[HumanNote(note="Review database pool metrics.")],
         )
         incident = Incident(
             public_id="INC-000001",
@@ -707,6 +829,9 @@ def test_database_level_incident_delete_cascades_through_analysis_results(
         hypothesis_id = hypothesis.id
         bias_flag_id = bias_flag.id
         action_id = action.id
+        timeline_review_id = timeline_event.human_review.id
+        confidence_override_id = hypothesis.confidence_override.id
+        human_note_id = analysis_run.human_notes[0].id
         session.commit()
 
     with sqlite_engine.begin() as connection:
@@ -723,6 +848,9 @@ def test_database_level_incident_delete_cascades_through_analysis_results(
         assert session.get(Hypothesis, hypothesis_id) is None
         assert session.get(BiasFlag, bias_flag_id) is None
         assert session.get(RecommendedAction, action_id) is None
+        assert session.get(TimelineEventReview, timeline_review_id) is None
+        assert session.get(HypothesisConfidenceOverride, confidence_override_id) is None
+        assert session.get(HumanNote, human_note_id) is None
 
     with sqlite_engine.connect() as connection:
         association_count = connection.execute(

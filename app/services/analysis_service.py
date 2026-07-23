@@ -15,9 +15,13 @@ from app.models import (
     ClaimSupportStatus,
     EvidenceItem,
     Fact,
+    FactReviewStatus,
+    Hypothesis,
+    HypothesisStatus,
     Incident,
     IncidentStatus,
     RecommendedAction,
+    TimelineEvent,
 )
 from app.schemas.ai_outputs import (
     CriticOutputV1,
@@ -77,6 +81,8 @@ class AnalysisPageData:
     open_questions_output: OpenQuestionsOutputV1 | None
     confirmed_facts: tuple[Fact, ...]
     unconfirmed_claims: tuple[Fact, ...]
+    reclassified_facts: tuple[Fact, ...]
+    hypothesis_status_options: tuple[HypothesisStatus, ...]
     evidence_by_code: Mapping[str, EvidenceItem]
     validation_summary: AnalysisValidationSummary
 
@@ -403,16 +409,19 @@ class AnalysisService:
             select(AnalysisRun)
             .join(AnalysisRun.incident)
             .options(
-                joinedload(AnalysisRun.incident).selectinload(
-                    Incident.evidence_items
-                ),
+                joinedload(AnalysisRun.incident).selectinload(Incident.evidence_items),
                 selectinload(AnalysisRun.facts),
-                selectinload(AnalysisRun.timeline_events),
-                selectinload(AnalysisRun.hypotheses),
+                selectinload(AnalysisRun.timeline_events).selectinload(
+                    TimelineEvent.human_review
+                ),
+                selectinload(AnalysisRun.hypotheses).selectinload(
+                    Hypothesis.confidence_override
+                ),
                 selectinload(AnalysisRun.bias_flags),
                 selectinload(AnalysisRun.actions).selectinload(
                     RecommendedAction.hypotheses
                 ),
+                selectinload(AnalysisRun.human_notes),
             )
             .where(
                 AnalysisRun.id == run_id,
@@ -428,11 +437,25 @@ class AnalysisService:
             fact
             for fact in analysis_run.facts
             if fact.support_status is ClaimSupportStatus.SUPPORTED
+            and fact.human_status
+            not in {
+                FactReviewStatus.REJECTED,
+                FactReviewStatus.RECLASSIFIED_AS_ASSUMPTION,
+            }
         )
         unconfirmed_claims = tuple(
             fact
             for fact in analysis_run.facts
-            if fact.support_status is not ClaimSupportStatus.SUPPORTED
+            if fact.human_status is not FactReviewStatus.RECLASSIFIED_AS_ASSUMPTION
+            and (
+                fact.support_status is not ClaimSupportStatus.SUPPORTED
+                or fact.human_status is FactReviewStatus.REJECTED
+            )
+        )
+        reclassified_facts = tuple(
+            fact
+            for fact in analysis_run.facts
+            if fact.human_status is FactReviewStatus.RECLASSIFIED_AS_ASSUMPTION
         )
         evidence_by_code = {
             evidence.evidence_code: evidence
@@ -457,6 +480,8 @@ class AnalysisService:
             ),
             confirmed_facts=confirmed_facts,
             unconfirmed_claims=unconfirmed_claims,
+            reclassified_facts=reclassified_facts,
+            hypothesis_status_options=tuple(HypothesisStatus),
             evidence_by_code=evidence_by_code,
             validation_summary=self._build_validation_summary(
                 analysis_run,
@@ -479,10 +504,7 @@ class AnalysisService:
             evidence_code
             for references in (
                 *(fact.evidence_codes for fact in analysis_run.facts),
-                *(
-                    event.evidence_codes
-                    for event in analysis_run.timeline_events
-                ),
+                *(event.evidence_codes for event in analysis_run.timeline_events),
                 *(
                     hypothesis.supporting_evidence_codes
                     for hypothesis in analysis_run.hypotheses

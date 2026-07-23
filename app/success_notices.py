@@ -15,6 +15,7 @@ class SuccessNotice(StrEnum):
     PASTED_EVIDENCE_CREATED = "pasted-evidence-created"
     EVIDENCE_FILES_UPLOADED = "evidence-files-uploaded"
     EVIDENCE_TYPE_UPDATED = "evidence-type-updated"
+    ANALYSIS_REVIEW_UPDATED = "analysis-review-updated"
 
 
 _SUCCESS_NOTICE_MESSAGES = {
@@ -23,6 +24,7 @@ _SUCCESS_NOTICE_MESSAGES = {
     SuccessNotice.PASTED_EVIDENCE_CREATED: "Pasted evidence saved successfully.",
     SuccessNotice.EVIDENCE_FILES_UPLOADED: "Evidence files uploaded successfully.",
     SuccessNotice.EVIDENCE_TYPE_UPDATED: "Evidence type updated successfully.",
+    SuccessNotice.ANALYSIS_REVIEW_UPDATED: "Human review saved successfully.",
 }
 
 

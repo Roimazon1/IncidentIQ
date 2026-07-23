@@ -30,3 +30,58 @@
     {% endif %}
   </div>
 </section>
+
+<section
+  class="card border-info shadow-sm mb-4"
+  id="human-notes-section"
+  aria-labelledby="human-notes-heading"
+>
+  <div class="card-body p-4">
+    <h2 class="h4" id="human-notes-heading">Human review notes</h2>
+    <p class="small text-body-secondary">
+      These notes are human-authored and remain separate from the AI analysis.
+    </p>
+    {% if analysis_run.human_notes %}
+      <ul class="list-group list-group-flush mb-3">
+        {% for human_note in analysis_run.human_notes %}
+          <li class="list-group-item border-start border-3 border-info ps-3">
+            <p class="mb-1">{{ human_note.note }}</p>
+            <span class="small text-body-secondary">
+              Human note added {{ human_note.created_at | incident_datetime }}
+            </span>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="text-body-secondary">No human notes have been added.</p>
+    {% endif %}
+    {% if analysis_run.status.value == "COMPLETED" %}
+      <form
+        method="post"
+        action="{{ url_for(
+          'add_analysis_human_note',
+          public_id=incident.public_id,
+          run_id=analysis_run.id
+        ) }}"
+      >
+        <label class="form-label fw-semibold" for="human-note">
+          Add a human note
+        </label>
+        <textarea
+          class="form-control"
+          id="human-note"
+          name="note"
+          rows="3"
+          required
+        ></textarea>
+        <button
+          class="btn btn-outline-primary mt-2"
+          type="submit"
+          data-loading-label="Saving…"
+        >
+          Save human note
+        </button>
+      </form>
+    {% endif %}
+  </div>
+</section>

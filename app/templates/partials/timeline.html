@@ -8,11 +8,23 @@
     {% if analysis_run.timeline_events %}
       <ol class="list-group list-group-numbered">
         {% for event in analysis_run.timeline_events %}
+          {% set human_review = event.human_review %}
           <li class="list-group-item d-flex align-items-start">
             <div class="ms-2 me-auto w-100">
               <div class="d-flex flex-wrap justify-content-between align-items-start gap-2">
                 <div>
-                  <div>{{ event.description }}</div>
+                  <div>
+                    {{ human_review.description if human_review else event.description }}
+                  </div>
+                  {% if human_review %}
+                    <div class="mt-1">
+                      <span class="badge text-bg-info">Human edit</span>
+                      <span class="small text-body-secondary">
+                        Original AI description retained:
+                        {{ event.description }}
+                      </span>
+                    </div>
+                  {% endif %}
                   <div class="small text-body-secondary mt-1">
                     {% if event.event_time %}
                       <time datetime="{{ event.event_time.isoformat() }}">
@@ -43,6 +55,39 @@
                   "Evidence references for this timeline event"
                 ) }}
               </div>
+              {% if analysis_run.status.value == "COMPLETED" %}
+                <form
+                  class="border-top mt-3 pt-3"
+                  method="post"
+                  action="{{ url_for(
+                    'review_timeline_event',
+                    public_id=incident.public_id,
+                    run_id=analysis_run.id,
+                    event_id=event.id
+                  ) }}"
+                >
+                  <label
+                    class="form-label small fw-semibold"
+                    for="timeline-description-{{ event.id }}"
+                  >
+                    Human-reviewed description
+                  </label>
+                  <textarea
+                    class="form-control form-control-sm"
+                    id="timeline-description-{{ event.id }}"
+                    name="description"
+                    rows="2"
+                    required
+                  >{{ human_review.description if human_review else event.description }}</textarea>
+                  <button
+                    class="btn btn-sm btn-outline-primary mt-2"
+                    type="submit"
+                    data-loading-label="Saving…"
+                  >
+                    Save human edit
+                  </button>
+                </form>
+              {% endif %}
             </div>
           </li>
         {% endfor %}
