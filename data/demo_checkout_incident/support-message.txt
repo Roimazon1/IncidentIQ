@@ -1,0 +1,25 @@
+SYNTHETIC SUPPORT TRANSCRIPT
+Case: SYN-SUPPORT-1042
+Received: 2025-02-18T10:16:40Z
+Channel: in-product support form
+
+Customer statement:
+"Checkout showed the payment step for much longer than usual and then displayed
+'Please try again.' The first attempt did not show an order confirmation. I
+tried again a few minutes later and the checkout completed."
+
+Support observation at 2025-02-18T10:18:05Z:
+- The synthetic payment activity view showed an approved authorization for the
+  first attempt.
+- The synthetic order lookup did not show a completed order for that attempt.
+- No customer identity, contact information, address, or payment details were
+  retained in this demonstration record.
+
+Follow-up at 2025-02-18T10:39:20Z:
+"The retry completed successfully. I have not seen the error again."
+
+Analyst note:
+The message establishes customer-visible impact and suggests a failure near the
+payment/order boundary. It does not by itself identify whether the payment
+provider, local database access, retry behavior, or another component caused
+the failure.
