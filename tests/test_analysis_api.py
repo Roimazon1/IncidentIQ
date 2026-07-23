@@ -76,6 +76,35 @@ class _OutOfRangeSummaryProvider:
         )
 
 
+class _MissingEvidenceSummaryProvider:
+    def __init__(self, delegate: FakeAIProvider) -> None:
+        self._delegate = delegate
+
+    def generate(self, request: AIRequest) -> AIResult[AIOutput]:
+        result = self._delegate.generate(request)
+        if request.metadata.analysis_stage is not AnalysisStage.SUMMARY:
+            return result
+        output = result.output
+        assert isinstance(output, SummaryOutputV1)
+        fact = output.facts[0]
+        missing_reference = fact.evidence[0].model_copy(
+            update={"evidence_id": "E-999"}
+        )
+        return AIResult[AIOutput](
+            output=output.model_copy(
+                update={
+                    "facts": (
+                        fact.model_copy(
+                            update={"evidence": (missing_reference,)},
+                        ),
+                    )
+                }
+            ),
+            metadata=result.metadata,
+            audit=result.audit,
+        )
+
+
 class _HighConfidenceTimelineProvider:
     def __init__(self, delegate: FakeAIProvider) -> None:
         self._delegate = delegate
@@ -241,9 +270,20 @@ def test_fake_analysis_can_be_run_and_reopened_without_exposing_raw_audit(
     assert "Confirmed facts" in detail_response.text
     assert "The redacted checkout log contains a failure." in detail_response.text
     assert "SUPPORTED" in detail_response.text
+    assert "Validated evidence" in detail_response.text
+    assert "Validated cited excerpt" in detail_response.text
+    assert (
+        'href="http://testserver/incidents/INC-000001/evidence/E-001"'
+        in detail_response.text
+    )
+    assert 'aria-label="Open evidence E-001 from checkout.log"' in detail_response.text
     assert "Unconfirmed AI claims" in detail_response.text
     assert "No unconfirmed claims were retained." in detail_response.text
     assert "A deployment may be related." in detail_response.text
+    assert "UNVERIFIED" in detail_response.text
+    assert "Evidence needed" in detail_response.text
+    assert "Compare pre-deployment behavior." in detail_response.text
+    assert "Review available evidence" in detail_response.text
     assert "Timeline" in detail_response.text
     assert "Direct" in detail_response.text
     assert "Inferred" in detail_response.text
@@ -428,10 +468,71 @@ def test_out_of_range_fact_is_separate_from_confirmed_facts(
     assert "No AI claims have validated support." in detail_response.text
     assert "Unconfirmed AI claims" in detail_response.text
     assert "UNSUPPORTED" in detail_response.text
+    assert 'class="badge text-bg-danger"' in detail_response.text
+    assert "Cited evidence" in detail_response.text
+    assert (
+        f'href="http://testserver/incidents/{public_id}/evidence/E-001"'
+        in detail_response.text
+    )
+    assert "Validated cited excerpt" not in detail_response.text
     assert detail_response.text.count(claim) == 1
     assert detail_response.text.index(claim) > detail_response.text.index(
         "Unconfirmed AI claims"
     )
+
+
+def test_missing_evidence_fact_remains_unconfirmed_without_broken_link_or_leak(
+    database_client: TestClient,
+    database_session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = PromptRegistry()
+    provider = _MissingEvidenceSummaryProvider(
+        FakeAIProvider.from_file_set(
+            FIXTURE_PATH,
+            CORE_FIXTURES,
+            prompt_resolver=registry.resolve_content,
+            prompt_bundle_validator=registry.validate_bundle,
+        )
+    )
+    monkeypatch.setattr(
+        analysis_router,
+        "build_configured_analysis_service",
+        _configured_service_builder(provider),
+    )
+    public_id = _create_ready_incident(database_client)
+
+    start_response = database_client.post(
+        f"/incidents/{public_id}/analysis",
+        follow_redirects=False,
+    )
+
+    with database_session_factory() as session:
+        fact = session.scalar(select(Fact))
+        assert fact is not None
+        assert fact.support_status is ClaimSupportStatus.UNSUPPORTED
+        assert fact.evidence_codes == ["E-999"]
+        assert fact.supporting_excerpt is None
+
+    detail_response = database_client.get(start_response.headers["location"])
+    claim = "The redacted checkout log contains a failure."
+
+    assert detail_response.status_code == 200
+    assert "Unconfirmed AI claims" in detail_response.text
+    assert detail_response.text.count(claim) == 1
+    assert detail_response.text.index(claim) > detail_response.text.index(
+        "Unconfirmed AI claims"
+    )
+    assert "UNSUPPORTED" in detail_response.text
+    assert "E-999 unavailable" in detail_response.text
+    assert (
+        f'href="http://testserver/incidents/{public_id}/evidence/E-999"'
+        not in detail_response.text
+    )
+    assert "Validated cited excerpt" not in detail_response.text
+    assert '"raw_response"' not in detail_response.text
+    assert '"facts":[' not in detail_response.text
+    assert "local-secret" not in detail_response.text
 
 
 def test_valid_contradiction_remains_visible_with_adjusted_confidence(

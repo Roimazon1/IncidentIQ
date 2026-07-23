@@ -2,6 +2,48 @@
 
 {% block title %}Analysis {{ analysis_run.id }} | {{ app_name }}{% endblock %}
 
+{% macro fact_evidence_links(fact, incident, evidence_by_code) %}
+  <div class="mt-2" aria-label="Evidence references for this claim">
+    <div class="small fw-semibold text-body-secondary mb-1">
+      {% if fact.support_status.value == "SUPPORTED" %}
+        Validated evidence
+      {% else %}
+        Cited evidence
+      {% endif %}
+    </div>
+    <div class="d-flex flex-wrap gap-2">
+      {% for evidence_code in fact.evidence_codes %}
+        {% set evidence = evidence_by_code.get(evidence_code) %}
+        {% if evidence %}
+          <a
+            class="badge rounded-pill text-bg-light border text-decoration-none"
+            href="{{ url_for(
+              'evidence_preview',
+              public_id=incident.public_id,
+              evidence_code=evidence_code
+            ) }}"
+            aria-label="Open evidence {{ evidence_code }} from {{ evidence.source_name }}"
+          >
+            {{ evidence_code }}
+          </a>
+        {% else %}
+          <span class="badge rounded-pill text-bg-danger">
+            {{ evidence_code }} unavailable
+          </span>
+        {% endif %}
+      {% else %}
+        <span class="small text-danger">No evidence was cited.</span>
+      {% endfor %}
+    </div>
+  </div>
+  {% if fact.supporting_excerpt %}
+    <blockquote class="border-start border-3 ps-3 mt-3 mb-0">
+      <div class="small fw-semibold text-body-secondary">Validated cited excerpt</div>
+      <p class="small mb-0">{{ fact.supporting_excerpt }}</p>
+    </blockquote>
+  {% endif %}
+{% endmacro %}
+
 {% block content %}
   <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4">
     <div>
@@ -142,14 +184,15 @@
           {% if page.confirmed_facts %}
             <ul class="list-group list-group-flush">
               {% for fact in page.confirmed_facts %}
-                <li class="list-group-item px-0">
+                <li class="list-group-item border-start border-3 border-success ps-3 pe-0">
                   <div class="d-flex justify-content-between gap-3">
                     <span>{{ fact.claim }}</span>
                     <span class="badge text-bg-success">{{ fact.support_status.value }}</span>
                   </div>
                   <div class="small text-body-secondary mt-2">
-                    Confidence {{ fact.confidence }}% · Evidence {{ fact.evidence_codes | join(", ") }}
+                    Confidence {{ fact.confidence }}%
                   </div>
+                  {{ fact_evidence_links(fact, incident, page.evidence_by_code) }}
                 </li>
               {% endfor %}
             </ul>
@@ -168,16 +211,17 @@
           {% if page.unconfirmed_claims %}
             <ul class="list-group list-group-flush">
               {% for fact in page.unconfirmed_claims %}
-                <li class="list-group-item px-0">
+                <li class="list-group-item border-start border-3 {% if fact.support_status.value in ['CONTRADICTED', 'UNSUPPORTED'] %}border-danger{% else %}border-warning{% endif %} ps-3 pe-0">
                   <div class="d-flex justify-content-between gap-3">
                     <span>{{ fact.claim }}</span>
-                    <span class="badge {% if fact.support_status.value == 'CONTRADICTED' %}text-bg-danger{% else %}text-bg-warning{% endif %}">
+                    <span class="badge {% if fact.support_status.value in ['CONTRADICTED', 'UNSUPPORTED'] %}text-bg-danger{% else %}text-bg-warning{% endif %}">
                       {{ fact.support_status.value }}
                     </span>
                   </div>
                   <div class="small text-body-secondary mt-2">
-                    Confidence {{ fact.confidence }}% · Evidence {{ fact.evidence_codes | join(", ") }}
+                    Confidence {{ fact.confidence }}%
                   </div>
+                  {{ fact_evidence_links(fact, incident, page.evidence_by_code) }}
                 </li>
               {% endfor %}
             </ul>
@@ -195,14 +239,29 @@
           {% if page.summary_output and page.summary_output.assumptions %}
             <ul class="list-group list-group-flush">
               {% for assumption in page.summary_output.assumptions %}
-                <li class="list-group-item px-0">
-                  <div>{{ assumption.claim }}</div>
-                  <div class="small text-body-secondary mt-1">{{ assumption.reason }}</div>
-                  {% if assumption.required_evidence %}
-                    <div class="small mt-2">
-                      Needed: {{ assumption.required_evidence | join(", ") }}
-                    </div>
-                  {% endif %}
+                <li class="list-group-item border-start border-3 border-warning ps-3 pe-0">
+                  <div class="d-flex justify-content-between gap-3">
+                    <span>{{ assumption.claim }}</span>
+                    <span class="badge text-bg-warning">UNVERIFIED</span>
+                  </div>
+                  <p class="small text-body-secondary mt-1 mb-2">
+                    {{ assumption.reason }}
+                  </p>
+                  <div class="small fw-semibold">Evidence needed</div>
+                  <ul class="small mb-2">
+                    {% for required_evidence in assumption.required_evidence %}
+                      <li>{{ required_evidence }}</li>
+                    {% endfor %}
+                  </ul>
+                  <a
+                    class="btn btn-sm btn-outline-warning"
+                    href="{{ url_for(
+                      'new_evidence_form',
+                      public_id=incident.public_id
+                    ) }}?tab=saved"
+                  >
+                    Review available evidence
+                  </a>
                 </li>
               {% endfor %}
             </ul>

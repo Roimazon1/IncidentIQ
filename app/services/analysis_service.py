@@ -1,5 +1,6 @@
 """Public lifecycle and orchestration facade for analysis runs."""
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TypeVar
 
@@ -65,6 +66,7 @@ class AnalysisPageData:
     open_questions_output: OpenQuestionsOutputV1 | None
     confirmed_facts: tuple[Fact, ...]
     unconfirmed_claims: tuple[Fact, ...]
+    evidence_by_code: Mapping[str, EvidenceItem]
 
 
 class AnalysisAlreadyRunningError(RuntimeError):
@@ -389,7 +391,9 @@ class AnalysisService:
             select(AnalysisRun)
             .join(AnalysisRun.incident)
             .options(
-                joinedload(AnalysisRun.incident),
+                joinedload(AnalysisRun.incident).selectinload(
+                    Incident.evidence_items
+                ),
                 selectinload(AnalysisRun.facts),
                 selectinload(AnalysisRun.timeline_events),
                 selectinload(AnalysisRun.hypotheses),
@@ -433,6 +437,10 @@ class AnalysisService:
             ),
             confirmed_facts=confirmed_facts,
             unconfirmed_claims=unconfirmed_claims,
+            evidence_by_code={
+                evidence.evidence_code: evidence
+                for evidence in analysis_run.incident.evidence_items
+            },
         )
 
     def run_summary_stage(self, run_id: int) -> AIResult[SummaryOutputV1]:
