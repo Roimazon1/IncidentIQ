@@ -44,8 +44,18 @@ EXPECTED_PROMPTS = {
         AnalysisStage.HYPOTHESES,
         PromptRole.TASK,
     ),
+    (PromptName.HYPOTHESES, PromptVersion.V2): (
+        "hypotheses_v2.txt",
+        AnalysisStage.HYPOTHESES,
+        PromptRole.TASK,
+    ),
     (PromptName.CRITIC, PromptVersion.V1): (
         "critic_v1.txt",
+        AnalysisStage.CRITIC,
+        PromptRole.TASK,
+    ),
+    (PromptName.CRITIC, PromptVersion.V2): (
+        "critic_v2.txt",
         AnalysisStage.CRITIC,
         PromptRole.TASK,
     ),
@@ -345,7 +355,9 @@ def test_application_code_does_not_load_prompt_files_outside_registry() -> None:
         "summary_v1.txt",
         "timeline_v1.txt",
         "hypotheses_v1.txt",
+        "hypotheses_v2.txt",
         "critic_v1.txt",
+        "critic_v2.txt",
         "bias_v1.txt",
         "open_questions_v1.txt",
         "postmortem_v1.txt",
