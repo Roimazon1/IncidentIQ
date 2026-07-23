@@ -14,8 +14,10 @@ from app.models import (
     AnalysisRun,
     AnalysisRunStatus,
     ClaimSupportStatus,
+    EvidenceItem,
     Fact,
     IncidentStatus,
+    RecommendedAction,
 )
 from app.routers import analysis as analysis_router
 from app.schemas.ai_outputs import (
@@ -386,6 +388,7 @@ def test_fake_analysis_can_be_run_and_reopened_without_exposing_raw_audit(
     assert "critic confidence 35%" in detail_response.text
     assert "Reasoning risks and fallacies" in detail_response.text
     assert "possible risks to investigate, not accusations" in detail_response.text
+    assert "Possible effect and location" in detail_response.text
     assert "Confirmation bias" in detail_response.text
     assert "Anchoring bias" in detail_response.text
     assert "Automation bias" in detail_response.text
@@ -413,6 +416,15 @@ def test_fake_analysis_can_be_run_and_reopened_without_exposing_raw_audit(
         detail_response.text
     )
     assert "AI audit" in detail_response.text
+    assert "Run status" in detail_response.text
+    assert "Started" in detail_response.text
+    assert "Completed" in detail_response.text
+    assert "Validation flags" in detail_response.text
+    assert "SUPPORTED 1" in detail_response.text
+    assert "Inferred timeline events" in detail_response.text
+    assert "Hypotheses with contradictions" in detail_response.text
+    assert "Unavailable evidence references" in detail_response.text
+    assert "None detected" in detail_response.text
     assert "local-secret" not in detail_response.text
     assert '"raw_response"' not in detail_response.text
     assert '"hypotheses":[' not in detail_response.text
@@ -446,6 +458,95 @@ def test_fake_analysis_can_be_run_and_reopened_without_exposing_raw_audit(
             (2, "Recent deployment regression", 45),
             (3, "External payment dependency failure", 35),
         ]
+
+
+def test_old_run_does_not_link_evidence_added_after_its_input_snapshot(
+    database_client: TestClient,
+    database_session_factory: sessionmaker[Session],
+) -> None:
+    public_id = _create_ready_incident(database_client)
+    start_response = database_client.post(
+        f"/incidents/{public_id}/analysis",
+        follow_redirects=False,
+    )
+    assert start_response.status_code == 303
+
+    with database_session_factory() as session:
+        analysis_run = session.scalar(
+            select(AnalysisRun)
+            .options(selectinload(AnalysisRun.hypotheses))
+            .where(AnalysisRun.id == 1)
+        )
+        assert analysis_run is not None
+        assert analysis_run.input_evidence_codes == ["E-001"]
+        raw_response_before = analysis_run.raw_response
+        action = RecommendedAction(
+            description="Inspect database pool saturation metrics.",
+            priority="HIGH",
+            hypotheses=[analysis_run.hypotheses[0]],
+            evidence_codes=["E-001", "E-002"],
+            owner_role="Site reliability engineer",
+            expected_information="Whether pool exhaustion coincided with failures.",
+            operational_risk="Read-only metrics review; low operational risk.",
+        )
+        analysis_run.actions.append(action)
+        session.commit()
+
+    initial_detail_response = database_client.get(start_response.headers["location"])
+
+    assert initial_detail_response.status_code == 200
+    assert "E-002 unavailable" in initial_detail_response.text
+    assert "/evidence/E-002" not in initial_detail_response.text
+    assert 'data-validation-flag="unavailable-evidence-references"' in (
+        initial_detail_response.text
+    )
+    assert 'data-validation-count="1"' in initial_detail_response.text
+
+    evidence_response = database_client.post(
+        f"/incidents/{public_id}/evidence/text",
+        data={
+            "source_name": "post-run.log",
+            "original_text": "api_key=later-secret\nadditional evidence",
+            "evidence_type": "APPLICATION_LOG",
+        },
+        follow_redirects=False,
+    )
+    assert evidence_response.status_code == 303
+
+    detail_response = database_client.get(start_response.headers["location"])
+
+    assert detail_response.status_code == 200
+    assert "Inspect database pool saturation metrics." in detail_response.text
+    assert "HIGH priority" in detail_response.text
+    assert "Proposed for human review only" in detail_response.text
+    assert "This action has not been executed." in detail_response.text
+    assert "Site reliability engineer" in detail_response.text
+    assert "#1 Database connection pool exhaustion" in detail_response.text
+    assert "Whether pool exhaustion coincided with failures." in detail_response.text
+    assert "Read-only metrics review; low operational risk." in detail_response.text
+    assert (
+        'href="http://testserver/incidents/INC-000001/evidence/E-001"'
+        in detail_response.text
+    )
+    assert "E-002 unavailable" in detail_response.text
+    assert 'data-validation-flag="unavailable-evidence-references"' in (
+        detail_response.text
+    )
+    assert 'data-validation-count="1"' in detail_response.text
+    assert "/evidence/E-002" not in detail_response.text
+    assert "local-secret" not in detail_response.text
+    assert "later-secret" not in detail_response.text
+    assert '"raw_response"' not in detail_response.text
+
+    with database_session_factory() as session:
+        evidence_codes = session.scalars(
+            select(EvidenceItem.evidence_code).order_by(EvidenceItem.evidence_code)
+        ).all()
+        persisted_run = session.get(AnalysisRun, 1)
+        assert evidence_codes == ["E-001", "E-002"]
+        assert persisted_run is not None
+        assert persisted_run.input_evidence_codes == ["E-001"]
+        assert persisted_run.raw_response == raw_response_before
 
 
 def test_inferred_provider_confidence_is_capped_after_auditing(
@@ -670,6 +771,11 @@ def test_missing_evidence_fact_remains_unconfirmed_without_broken_link_or_leak(
     )
     assert "UNSUPPORTED" in detail_response.text
     assert "E-999 unavailable" in detail_response.text
+    assert 'data-claim-support-status="UNSUPPORTED"' in detail_response.text
+    assert 'data-validation-count="1"' in detail_response.text
+    assert 'data-validation-flag="unavailable-evidence-references"' in (
+        detail_response.text
+    )
     assert (
         f'href="http://testserver/incidents/{public_id}/evidence/E-999"'
         not in detail_response.text
@@ -732,6 +838,10 @@ def test_valid_contradiction_remains_visible_with_adjusted_confidence(
     )
     assert "E-001" in detail_response.text
     assert "Confidence is reduced deterministically" in detail_response.text
+    assert 'data-validation-flag="hypotheses-with-contradictions"' in (
+        detail_response.text
+    )
+    assert 'data-validation-count="1"' in detail_response.text
     assert '"raw_response"' not in detail_response.text
 
 

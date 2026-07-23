@@ -1,0 +1,32 @@
+<section
+  class="card border-0 shadow-sm mb-4"
+  id="summary-section"
+  aria-labelledby="summary-heading"
+>
+  <div class="card-body p-4">
+    <h2 class="h4" id="summary-heading">Summary</h2>
+    {% if page.summary_output %}
+      <p>{{ page.summary_output.summary.text }}</p>
+      <dl class="mb-0">
+        <dt>Impact</dt>
+        <dd>{{ page.summary_output.summary.impact }}</dd>
+        <dt>Uncertainty</dt>
+        <dd>{{ page.summary_output.summary.uncertainty }}</dd>
+        {% if page.summary_output.unknowns %}
+          <dt>Unknowns</dt>
+          <dd class="mb-0">
+            <ul class="mb-0">
+              {% for unknown in page.summary_output.unknowns %}
+                <li>{{ unknown }}</li>
+              {% endfor %}
+            </ul>
+          </dd>
+        {% endif %}
+      </dl>
+    {% else %}
+      <p class="text-body-secondary mb-0">
+        No completed summary is available for this analysis run.
+      </p>
+    {% endif %}
+  </div>
+</section>

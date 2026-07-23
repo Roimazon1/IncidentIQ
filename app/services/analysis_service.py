@@ -17,6 +17,7 @@ from app.models import (
     Fact,
     Incident,
     IncidentStatus,
+    RecommendedAction,
 )
 from app.schemas.ai_outputs import (
     CriticOutputV1,
@@ -56,6 +57,16 @@ StageOutputT = TypeVar("StageOutputT", bound=BaseModel)
 
 
 @dataclass(frozen=True, slots=True)
+class AnalysisValidationSummary:
+    """Deterministic validation outcomes safe to expose in the audit view."""
+
+    claim_status_counts: Mapping[str, int]
+    inferred_timeline_events: int
+    hypotheses_with_contradictions: int
+    unavailable_evidence_codes: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class AnalysisPageData:
     """Safe structured data needed to render one saved analysis run."""
 
@@ -67,6 +78,7 @@ class AnalysisPageData:
     confirmed_facts: tuple[Fact, ...]
     unconfirmed_claims: tuple[Fact, ...]
     evidence_by_code: Mapping[str, EvidenceItem]
+    validation_summary: AnalysisValidationSummary
 
 
 class AnalysisAlreadyRunningError(RuntimeError):
@@ -398,6 +410,9 @@ class AnalysisService:
                 selectinload(AnalysisRun.timeline_events),
                 selectinload(AnalysisRun.hypotheses),
                 selectinload(AnalysisRun.bias_flags),
+                selectinload(AnalysisRun.actions).selectinload(
+                    RecommendedAction.hypotheses
+                ),
             )
             .where(
                 AnalysisRun.id == run_id,
@@ -419,6 +434,11 @@ class AnalysisService:
             for fact in analysis_run.facts
             if fact.support_status is not ClaimSupportStatus.SUPPORTED
         )
+        evidence_by_code = {
+            evidence.evidence_code: evidence
+            for evidence in analysis_run.incident.evidence_items
+            if evidence.evidence_code in analysis_run.input_evidence_codes
+        }
         return AnalysisPageData(
             analysis_run=analysis_run,
             summary_output=self._result_persistence.extract_summary_output(
@@ -437,10 +457,56 @@ class AnalysisService:
             ),
             confirmed_facts=confirmed_facts,
             unconfirmed_claims=unconfirmed_claims,
-            evidence_by_code={
-                evidence.evidence_code: evidence
-                for evidence in analysis_run.incident.evidence_items
-            },
+            evidence_by_code=evidence_by_code,
+            validation_summary=self._build_validation_summary(
+                analysis_run,
+                evidence_by_code,
+            ),
+        )
+
+    @staticmethod
+    def _build_validation_summary(
+        analysis_run: AnalysisRun,
+        evidence_by_code: Mapping[str, EvidenceItem],
+    ) -> AnalysisValidationSummary:
+        claim_status_counts = {
+            status.value: sum(
+                fact.support_status is status for fact in analysis_run.facts
+            )
+            for status in ClaimSupportStatus
+        }
+        referenced_evidence_codes = {
+            evidence_code
+            for references in (
+                *(fact.evidence_codes for fact in analysis_run.facts),
+                *(
+                    event.evidence_codes
+                    for event in analysis_run.timeline_events
+                ),
+                *(
+                    hypothesis.supporting_evidence_codes
+                    for hypothesis in analysis_run.hypotheses
+                ),
+                *(
+                    hypothesis.contradicting_evidence_codes
+                    for hypothesis in analysis_run.hypotheses
+                ),
+                *(action.evidence_codes for action in analysis_run.actions),
+            )
+            for evidence_code in references
+        }
+        return AnalysisValidationSummary(
+            claim_status_counts=claim_status_counts,
+            inferred_timeline_events=sum(
+                event.is_inferred for event in analysis_run.timeline_events
+            ),
+            hypotheses_with_contradictions=sum(
+                bool(hypothesis.contradicting_evidence_codes)
+                for hypothesis in analysis_run.hypotheses
+            ),
+            unavailable_evidence_codes=tuple(
+                sorted(referenced_evidence_codes - evidence_by_code.keys())
+            ),
         )
 
     def run_summary_stage(self, run_id: int) -> AIResult[SummaryOutputV1]:

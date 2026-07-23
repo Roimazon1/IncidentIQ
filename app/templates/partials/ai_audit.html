@@ -1,0 +1,90 @@
+<section
+  class="card border-0 shadow-sm"
+  id="ai-audit-section"
+  aria-labelledby="audit-heading"
+>
+  <div class="card-body p-4">
+    <h2 class="h4" id="audit-heading">AI audit</h2>
+    <p class="small text-body-secondary">
+      Audit metadata explains how this run was generated; it does not validate the
+      AI conclusions.
+    </p>
+    <dl class="row">
+      <dt class="col-sm-3">Run status</dt>
+      <dd class="col-sm-9">
+        <span class="badge {% if analysis_run.status.value == 'COMPLETED' %}text-bg-success{% else %}text-bg-danger{% endif %}">
+          {{ analysis_run.status.value }}
+        </span>
+      </dd>
+      <dt class="col-sm-3">Started</dt>
+      <dd class="col-sm-9">{{ analysis_run.started_at | incident_datetime }}</dd>
+      <dt class="col-sm-3">Completed</dt>
+      <dd class="col-sm-9">
+        {{ analysis_run.completed_at | incident_datetime if analysis_run.completed_at else "Not completed" }}
+      </dd>
+      <dt class="col-sm-3">Provider and model</dt>
+      <dd class="col-sm-9">{{ analysis_run.provider_name }} / {{ analysis_run.model_name }}</dd>
+      <dt class="col-sm-3">Prompt versions</dt>
+      <dd class="col-sm-9">
+        {% for prompt_name, prompt_version in analysis_run.prompt_versions | dictsort %}
+          <span class="badge text-bg-light border">{{ prompt_name }} {{ prompt_version }}</span>
+        {% else %}
+          Not available
+        {% endfor %}
+      </dd>
+      <dt class="col-sm-3">Input evidence</dt>
+      <dd class="col-sm-9">
+        {{ analysis_run.input_evidence_codes | join(", ") if analysis_run.input_evidence_codes else "Not available" }}
+      </dd>
+    </dl>
+    <h3 class="h5">Validation flags</h3>
+    <p class="small text-body-secondary">
+      These flags summarize deterministic validation results retained with the
+      analysis. They do not expose the provider's raw response.
+    </p>
+    <dl class="row mb-0">
+      <dt class="col-sm-3">Claim classifications</dt>
+      <dd class="col-sm-9">
+        <div class="d-flex flex-wrap gap-2">
+          {% for support_status, count in page.validation_summary.claim_status_counts | dictsort %}
+            <span
+              class="badge text-bg-light border"
+              data-claim-support-status="{{ support_status }}"
+              data-validation-count="{{ count }}"
+            >
+              {{ support_status }} {{ count }}
+            </span>
+          {% endfor %}
+        </div>
+      </dd>
+      <dt class="col-sm-3">Inferred timeline events</dt>
+      <dd
+        class="col-sm-9"
+        data-validation-flag="inferred-timeline-events"
+        data-validation-count="{{ page.validation_summary.inferred_timeline_events }}"
+      >
+        {{ page.validation_summary.inferred_timeline_events }}
+      </dd>
+      <dt class="col-sm-3">Hypotheses with contradictions</dt>
+      <dd
+        class="col-sm-9"
+        data-validation-flag="hypotheses-with-contradictions"
+        data-validation-count="{{ page.validation_summary.hypotheses_with_contradictions }}"
+      >
+        {{ page.validation_summary.hypotheses_with_contradictions }}
+      </dd>
+      <dt class="col-sm-3">Unavailable evidence references</dt>
+      <dd
+        class="col-sm-9 mb-0"
+        data-validation-flag="unavailable-evidence-references"
+        data-validation-count="{{ page.validation_summary.unavailable_evidence_codes | length }}"
+      >
+        {% for evidence_code in page.validation_summary.unavailable_evidence_codes %}
+          <span class="badge text-bg-danger">{{ evidence_code }} unavailable</span>
+        {% else %}
+          None detected
+        {% endfor %}
+      </dd>
+    </dl>
+  </div>
+</section>

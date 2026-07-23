@@ -1,0 +1,103 @@
+<div
+  class="row g-4 mb-4"
+  id="facts-assumptions-section"
+  aria-label="Facts and assumptions"
+>
+  <div class="col-lg-6">
+    <section class="card border-success shadow-sm mb-4" aria-labelledby="facts-heading">
+      <div class="card-body p-4">
+        <h2 class="h4" id="facts-heading">Confirmed facts</h2>
+        <p class="small text-body-secondary">
+          Only claims with fully validated evidence references appear here.
+        </p>
+        {% if page.confirmed_facts %}
+          <ul class="list-group list-group-flush">
+            {% for fact in page.confirmed_facts %}
+              <li class="list-group-item border-start border-3 border-success ps-3 pe-0">
+                <div class="d-flex justify-content-between gap-3">
+                  <span>{{ fact.claim }}</span>
+                  <span class="badge text-bg-success">{{ fact.support_status.value }}</span>
+                </div>
+                <div class="small text-body-secondary mt-2">
+                  Confidence {{ fact.confidence }}%
+                </div>
+                {{ fact_evidence_links(fact, incident, page.evidence_by_code) }}
+              </li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <p class="mb-0">No AI claims have validated support.</p>
+        {% endif %}
+      </div>
+    </section>
+
+    <section class="card border-warning shadow-sm" aria-labelledby="unconfirmed-claims-heading">
+      <div class="card-body p-4">
+        <h2 class="h4" id="unconfirmed-claims-heading">Unconfirmed AI claims</h2>
+        <p class="small text-body-secondary">
+          These claims are not confirmed facts and require additional evidence or review.
+        </p>
+        {% if page.unconfirmed_claims %}
+          <ul class="list-group list-group-flush">
+            {% for fact in page.unconfirmed_claims %}
+              <li class="list-group-item border-start border-3 {% if fact.support_status.value in ['CONTRADICTED', 'UNSUPPORTED'] %}border-danger{% else %}border-warning{% endif %} ps-3 pe-0">
+                <div class="d-flex justify-content-between gap-3">
+                  <span>{{ fact.claim }}</span>
+                  <span class="badge {% if fact.support_status.value in ['CONTRADICTED', 'UNSUPPORTED'] %}text-bg-danger{% else %}text-bg-warning{% endif %}">
+                    {{ fact.support_status.value }}
+                  </span>
+                </div>
+                <div class="small text-body-secondary mt-2">
+                  Confidence {{ fact.confidence }}%
+                </div>
+                {{ fact_evidence_links(fact, incident, page.evidence_by_code) }}
+              </li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <p class="mb-0">No unconfirmed claims were retained.</p>
+        {% endif %}
+      </div>
+    </section>
+  </div>
+
+  <div class="col-lg-6">
+    <section class="card border-0 shadow-sm h-100" aria-labelledby="assumptions-heading">
+      <div class="card-body p-4">
+        <h2 class="h4" id="assumptions-heading">Assumptions</h2>
+        {% if page.summary_output and page.summary_output.assumptions %}
+          <ul class="list-group list-group-flush">
+            {% for assumption in page.summary_output.assumptions %}
+              <li class="list-group-item border-start border-3 border-warning ps-3 pe-0">
+                <div class="d-flex justify-content-between gap-3">
+                  <span>{{ assumption.claim }}</span>
+                  <span class="badge text-bg-warning">UNVERIFIED</span>
+                </div>
+                <p class="small text-body-secondary mt-1 mb-2">
+                  {{ assumption.reason }}
+                </p>
+                <div class="small fw-semibold">Evidence needed</div>
+                <ul class="small mb-2">
+                  {% for required_evidence in assumption.required_evidence %}
+                    <li>{{ required_evidence }}</li>
+                  {% endfor %}
+                </ul>
+                <a
+                  class="btn btn-sm btn-outline-warning"
+                  href="{{ url_for(
+                    'new_evidence_form',
+                    public_id=incident.public_id
+                  ) }}?tab=saved"
+                >
+                  Review available evidence
+                </a>
+              </li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <p class="mb-0">No assumptions were retained.</p>
+        {% endif %}
+      </div>
+    </section>
+  </div>
+</div>
