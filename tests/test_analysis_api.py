@@ -89,9 +89,7 @@ class _MissingEvidenceSummaryProvider:
         output = result.output
         assert isinstance(output, SummaryOutputV1)
         fact = output.facts[0]
-        missing_reference = fact.evidence[0].model_copy(
-            update={"evidence_id": "E-999"}
-        )
+        missing_reference = fact.evidence[0].model_copy(update={"evidence_id": "E-999"})
         return AIResult[AIOutput](
             output=output.model_copy(
                 update={
@@ -372,10 +370,7 @@ def test_fake_analysis_can_be_run_and_reopened_without_exposing_raw_audit(
     assert "Recommended validation test" in detail_response.text
     assert "Expected if true" in detail_response.text
     assert "Expected if false" in detail_response.text
-    assert (
-        'aria-label="Supporting evidence for hypothesis 1"'
-        in detail_response.text
-    )
+    assert 'aria-label="Supporting evidence for hypothesis 1"' in detail_response.text
     assert "Pool saturation aligns with the failures." in detail_response.text
     assert "The pool retained available capacity during failures." in (
         detail_response.text
@@ -829,8 +824,7 @@ def test_valid_contradiction_remains_visible_with_adjusted_confidence(
     assert "Confidence 50%" in detail_response.text
     assert "Evidence against" in detail_response.text
     assert (
-        'aria-label="Contradicting evidence for hypothesis 1"'
-        in detail_response.text
+        'aria-label="Contradicting evidence for hypothesis 1"' in detail_response.text
     )
     assert (
         f'href="http://testserver/incidents/{public_id}/evidence/E-001"'
