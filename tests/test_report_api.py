@@ -223,3 +223,89 @@ def test_report_save_rejects_blank_human_draft_without_mutation(
         assert report is not None
         assert report.editable_text == EDITABLE_TEXT
         assert report.generated_text == GENERATED_TEXT
+
+
+def test_markdown_export_uses_sanitized_human_edit_and_safe_headers(
+    database_client: TestClient,
+    database_session_factory: sessionmaker[Session],
+) -> None:
+    public_id, _, _, report_id = _persist_report(database_session_factory)
+    export_secret = "markdown-export-secret"
+    with database_session_factory() as session:
+        report = session.get(Report, report_id)
+        assert report is not None
+        report.editable_text = (
+            "# Human export\n\n"
+            f"api_key={export_secret}\n\n"
+            "<script>unsafe</script>"
+        )
+        session.commit()
+
+    response = database_client.get(
+        f"/incidents/{public_id}/reports/{report_id}/export.md"
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "text/markdown; charset=utf-8"
+    assert response.headers["content-disposition"] == (
+        'attachment; filename="INC-000001-postmortem.md"'
+    )
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.text.startswith("# Human export")
+    assert "[REDACTED_API_KEY]" in response.text
+    assert "&lt;script&gt;unsafe&lt;/script&gt;" in response.text
+    assert export_secret not in response.text
+    assert GENERATED_TEXT not in response.text
+    assert RAW_AUDIT_SECRET not in response.text
+    assert '"generation"' not in response.text
+
+
+def test_print_view_uses_only_sanitized_human_edit(
+    database_client: TestClient,
+    database_session_factory: sessionmaker[Session],
+) -> None:
+    public_id, _, run_id, report_id = _persist_report(database_session_factory)
+    print_secret = "print-view-secret"
+    with database_session_factory() as session:
+        report = session.get(Report, report_id)
+        assert report is not None
+        report.editable_text = (
+            "# Human print draft\n\n"
+            f"api_key={print_secret}\n\n"
+            "<iframe>unsafe</iframe>"
+        )
+        session.commit()
+
+    response = database_client.get(
+        f"/incidents/{public_id}/reports/{report_id}/print"
+    )
+
+    assert response.status_code == 200
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert "script-src 'none'" in response.headers["content-security-policy"]
+    assert "Human print draft" in response.text
+    assert f"Analysis run {run_id}" in response.text
+    assert "[REDACTED_API_KEY]" in response.text
+    assert print_secret not in response.text
+    assert "<iframe>unsafe</iframe>" not in response.text
+    assert GENERATED_TEXT not in response.text
+    assert RAW_AUDIT_SECRET not in response.text
+    assert "Safe generation metadata" not in response.text
+    assert "@media print" in response.text
+
+
+def test_export_and_print_reject_cross_incident_access(
+    database_client: TestClient,
+    database_session_factory: sessionmaker[Session],
+) -> None:
+    _, other_public_id, _, report_id = _persist_report(database_session_factory)
+
+    export_response = database_client.get(
+        f"/incidents/{other_public_id}/reports/{report_id}/export.md"
+    )
+    print_response = database_client.get(
+        f"/incidents/{other_public_id}/reports/{report_id}/print"
+    )
+
+    assert export_response.status_code == 404
+    assert print_response.status_code == 404

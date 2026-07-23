@@ -20,7 +20,32 @@
         {{ incident.public_id }} &middot; {{ incident.name }}
       </p>
     </div>
-    <span class="badge text-bg-warning">Human review required</span>
+    <div class="d-flex flex-wrap align-items-center gap-2">
+      <a
+        class="btn btn-outline-primary"
+        href="{{ url_for(
+          'export_report_markdown',
+          public_id=incident.public_id,
+          report_id=report.id
+        ) }}"
+        download
+      >
+        Download Markdown
+      </a>
+      <a
+        class="btn btn-outline-secondary"
+        href="{{ url_for(
+          'print_report',
+          public_id=incident.public_id,
+          report_id=report.id
+        ) }}"
+        target="_blank"
+        rel="noopener"
+      >
+        Print view
+      </a>
+      <span class="badge text-bg-warning">Human review required</span>
+    </div>
   </div>
 
   <div class="alert alert-info border-0 shadow-sm" role="note">

@@ -3,7 +3,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
@@ -154,3 +154,58 @@ def save_report(
         url=location,
         status_code=status.HTTP_303_SEE_OTHER,
     )
+
+
+@router.get("/reports/{report_id}/export.md", name="export_report_markdown")
+def export_report_markdown(
+    public_id: str,
+    report_id: int,
+    service: ReportServiceDependency,
+) -> Response:
+    """Download the sanitized human-edited report as Markdown."""
+    try:
+        document = service.build_report_document(public_id, report_id)
+    except ReportNotFoundError as exc:
+        raise _report_error(exc) from exc
+    return Response(
+        content=document.content,
+        media_type="text/markdown",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="{document.markdown_filename}"'
+            ),
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@router.get("/reports/{report_id}/print", name="print_report")
+def print_report(
+    request: Request,
+    public_id: str,
+    report_id: int,
+    service: ReportServiceDependency,
+) -> HTMLResponse:
+    """Render a print-friendly view of the sanitized human-edited report."""
+    try:
+        document = service.build_report_document(public_id, report_id)
+    except ReportNotFoundError as exc:
+        raise _report_error(exc) from exc
+    response = templates.TemplateResponse(
+        request=request,
+        name="report_print.html",
+        context={
+            "app_name": settings.app_name,
+            "report": document.report,
+            "incident": document.report.incident,
+            "analysis_run": document.report.analysis_run,
+            "report_content": document.content,
+        },
+    )
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; script-src 'none'; base-uri 'none'; "
+        "frame-ancestors 'none'"
+    )
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response

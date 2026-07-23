@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex, nofollow">
+    <title>Postmortem | {{ incident.public_id }} | {{ app_name }}</title>
+    <link
+      href="{{ url_for('static', path='/vendor/bootstrap/5.3.8/bootstrap.min.css') }}"
+      rel="stylesheet"
+    >
+    <style>
+      body {
+        color: #111;
+        background: #fff;
+      }
+
+      .report-content {
+        font: inherit;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+
+      @media print {
+        @page {
+          margin: 18mm;
+        }
+
+        .no-print {
+          display: none !important;
+        }
+
+        .container {
+          max-width: none;
+          padding: 0;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="container py-4">
+      <nav class="no-print mb-4" aria-label="Print view navigation">
+        <a
+          href="{{ url_for(
+            'report_detail',
+            public_id=incident.public_id,
+            report_id=report.id
+          ) }}"
+        >
+          &larr; Back to editable report
+        </a>
+        <span class="text-body-secondary ms-3">
+          Use your browser&rsquo;s print command to print or save as PDF.
+        </span>
+      </nav>
+
+      <header class="border-bottom pb-3 mb-4">
+        <div class="text-body-secondary">{{ incident.public_id }}</div>
+        <h1 class="h2 mb-1">Incident postmortem</h1>
+        <p class="mb-0">{{ incident.name }} &middot; Analysis run {{ analysis_run.id }}</p>
+      </header>
+
+      <aside class="border-start border-4 border-warning ps-3 mb-4">
+        Human-edited, AI-assisted draft. Uncertainty and unresolved conclusions
+        require investigator review.
+      </aside>
+
+      <pre class="report-content mb-0">{{ report_content }}</pre>
+    </main>
+  </body>
+</html>

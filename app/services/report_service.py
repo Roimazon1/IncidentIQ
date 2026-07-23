@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import html
 import json
+import re
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from hashlib import sha256
 
 from sqlalchemy import select
@@ -111,6 +113,16 @@ POSTMORTEM_SECTIONS = (
     ("lessons_learned", "Lessons learned"),
     ("follow_up_actions", "Follow-up actions"),
 )
+_UNSAFE_FILENAME_CHARACTERS = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+@dataclass(frozen=True, slots=True)
+class ReportDocument:
+    """Sanitized human-edited content prepared for presentation or download."""
+
+    report: Report
+    content: str
+    markdown_filename: str
 
 
 class ReportInputUnavailableError(RuntimeError):
@@ -258,6 +270,26 @@ class ReportService:
                 "The edited report could not be saved."
             ) from exc
         return report
+
+    def build_report_document(
+        self,
+        incident_public_id: str,
+        report_id: int,
+    ) -> ReportDocument:
+        """Prepare only the scoped human draft for safe export or printing."""
+        report = self.get_report(incident_public_id, report_id)
+        safe_identifier = _UNSAFE_FILENAME_CHARACTERS.sub(
+            "-",
+            report.incident.public_id,
+        ).strip("._-")
+        if not safe_identifier:
+            safe_identifier = "incident"
+        content = self._sanitize_editable_text(report.editable_text)
+        return ReportDocument(
+            report=report,
+            content=f"{content.rstrip()}\n",
+            markdown_filename=f"{safe_identifier}-postmortem.md",
+        )
 
     def build_report_input(
         self,
