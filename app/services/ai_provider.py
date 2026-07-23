@@ -9,7 +9,7 @@ from enum import StrEnum
 from math import isfinite
 from typing import Never, Protocol, runtime_checkable
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from app.config import Settings
 from app.schemas.ai_outputs import (
@@ -17,6 +17,7 @@ from app.schemas.ai_outputs import (
     CriticOutputV1,
     HypothesesOutputV1,
     OpenQuestionsOutputV1,
+    PostmortemOutputV1,
     ReasoningRisksOutputV1,
     SummaryOutputV1,
     TimelineOutputV1,
@@ -159,6 +160,7 @@ _OUTPUT_MODELS: dict[OutputSchemaIdentifier, type[AIOutput]] = {
     OutputSchemaIdentifier.CRITIC_V1: CriticOutputV1,
     OutputSchemaIdentifier.REASONING_RISKS_V1: ReasoningRisksOutputV1,
     OutputSchemaIdentifier.OPEN_QUESTIONS_V1: OpenQuestionsOutputV1,
+    OutputSchemaIdentifier.POSTMORTEM_V1: PostmortemOutputV1,
 }
 
 _SAFE_FAILURE_EXPLANATIONS = {
@@ -252,6 +254,28 @@ def build_ai_result(
             attempt_count=attempt_count,
         ),
         audit=SuccessAuditData(raw_response=raw_response),
+    )
+
+
+def ai_result_matches_request(
+    result: AIResult[AIOutput],
+    *,
+    request: AIRequest,
+    output_type: type[BaseModel],
+    provider_name: str,
+    model_name: str,
+) -> bool:
+    """Check one provider result against its typed request traceability."""
+    metadata = result.metadata
+    return (
+        isinstance(result.output, output_type)
+        and metadata.analysis_stage is request.metadata.analysis_stage
+        and metadata.output_schema is request.output_schema
+        and metadata.system_prompt == request.prompts.system
+        and metadata.task_prompt == request.prompts.task
+        and metadata.request_identifier == request.metadata.request_identifier
+        and metadata.provider_name == provider_name
+        and metadata.model_name == model_name
     )
 
 

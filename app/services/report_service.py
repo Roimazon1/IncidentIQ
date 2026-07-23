@@ -2,26 +2,44 @@
 
 from __future__ import annotations
 
+import html
+import json
 from collections.abc import Mapping, Sequence
+from hashlib import sha256
 
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.models import (
+    AnalysisRun,
     AnalysisRunStatus,
     ClaimSupportStatus,
     EvidenceItem,
     Fact,
+    Incident,
     RecommendedAction,
+    Report,
 )
 from app.schemas.ai_outputs import (
     CriticOutputV1,
     HypothesesOutputV1,
     OpenQuestionsOutputV1,
+    PostmortemOutputV1,
     SummaryOutputV1,
     TimelineOutputV1,
 )
 from app.schemas.ai_provider import (
+    AIRequest,
+    AIResult,
+    AnalysisStage,
     EvidenceReferenceValidationStatus,
+    OutputSchemaIdentifier,
+    PromptBundle,
+    PromptName,
+    PromptReference,
+    PromptVersion,
+    SafeAIMetadata,
     ValidatedHypothesisEvidenceV1,
     ValidatedHypothesisV1,
 )
@@ -53,19 +71,150 @@ from app.schemas.report import (
 )
 from app.services.analysis_persistence import AnalysisResultPersistence
 from app.services.analysis_service import AnalysisPageData, AnalysisService
+from app.services.ai_provider import (
+    AIProvider,
+    AIProviderExecutionError,
+    ai_result_matches_request,
+)
 from app.services.evidence_manifest_service import EvidenceManifestService
+from app.services.redaction_service import RedactionService
 from app.services.validation_service import ValidationService
+
+
+POSTMORTEM_SECTIONS = (
+    ("executive_summary", "Executive summary"),
+    ("incident_impact", "Incident impact"),
+    ("detection", "Detection"),
+    ("evidence_reviewed", "Evidence reviewed"),
+    ("timeline", "Timeline"),
+    ("confirmed_facts", "Confirmed facts"),
+    (
+        "assumptions_and_unresolved_questions",
+        "Assumptions and unresolved questions",
+    ),
+    (
+        "root_cause_hypotheses_and_confidence",
+        "Root-cause hypotheses and confidence",
+    ),
+    (
+        "supporting_and_contradicting_evidence",
+        "Supporting and contradicting evidence",
+    ),
+    ("investigation_actions", "Investigation actions"),
+    ("mitigation_and_recovery", "Mitigation and recovery"),
+    ("biases_and_reasoning_risks", "Biases and reasoning risks"),
+    (
+        "ai_limitations_and_unsupported_claims",
+        "AI limitations and unsupported claims detected",
+    ),
+    ("lessons_learned", "Lessons learned"),
+    ("follow_up_actions", "Follow-up actions"),
+)
 
 
 class ReportInputUnavailableError(RuntimeError):
     """Raised when a run cannot supply complete validated report input."""
 
 
+class ReportProviderRequiredError(RuntimeError):
+    """Raised when postmortem generation has no injected AI provider."""
+
+
+class ReportGenerationError(RuntimeError):
+    """Raised when a provider result violates the postmortem contract."""
+
+
+class ReportPersistenceError(RuntimeError):
+    """Raised when a generated report cannot be saved atomically."""
+
+
 class ReportService:
     """Compose reviewed analysis values without exposing audit or evidence bodies."""
 
-    def __init__(self, session: Session) -> None:
+    def __init__(
+        self,
+        session: Session,
+        *,
+        ai_provider: AIProvider | None = None,
+    ) -> None:
+        self._session = session
         self._analysis_service = AnalysisService(session)
+        self._ai_provider = ai_provider
+
+    def generate_draft_report(
+        self,
+        incident_public_id: str,
+        run_id: int,
+    ) -> Report:
+        """Generate and persist one idempotent editable postmortem draft."""
+        existing_report = self._find_existing_report(incident_public_id, run_id)
+        if existing_report is not None:
+            return existing_report
+
+        report_input = self.build_report_input(incident_public_id, run_id)
+        request = self._build_postmortem_request(report_input)
+        provider = self._require_provider()
+        try:
+            result = provider.generate(request)
+        except AIProviderExecutionError:
+            self._session.rollback()
+            raise
+        if not ai_result_matches_request(
+            result,
+            request=request,
+            output_type=PostmortemOutputV1,
+            provider_name=report_input.analysis_run.provider_name,
+            model_name=report_input.analysis_run.model_name,
+        ):
+            self._session.rollback()
+            raise ReportGenerationError(
+                "The AI provider returned an invalid postmortem output."
+            )
+
+        typed_result = AIResult[PostmortemOutputV1](
+            output=result.output,
+            metadata=result.metadata,
+            audit=result.audit,
+        )
+        generated_text = self._render_postmortem(typed_result.output)
+        analysis_run = self._get_scoped_analysis_run(
+            incident_public_id,
+            report_input.analysis_run.id,
+        )
+        report = Report(
+            incident_id=analysis_run.incident_id,
+            analysis_run_id=analysis_run.id,
+            generated_text=generated_text,
+            editable_text=generated_text,
+            final_text=None,
+            export_metadata={
+                "generation": self._build_generation_metadata(
+                    typed_result,
+                    report_input,
+                )
+            },
+        )
+        self._session.add(report)
+        try:
+            self._session.commit()
+            self._session.refresh(report)
+        except IntegrityError as exc:
+            self._session.rollback()
+            existing_report = self._find_existing_report(
+                incident_public_id,
+                run_id,
+            )
+            if existing_report is not None:
+                return existing_report
+            raise ReportPersistenceError(
+                "The generated report could not be saved."
+            ) from exc
+        except SQLAlchemyError as exc:
+            self._session.rollback()
+            raise ReportPersistenceError(
+                "The generated report could not be saved."
+            ) from exc
+        return report
 
     def build_report_input(
         self,
@@ -195,6 +344,124 @@ class ReportService:
                 evidence_by_code,
             ),
         )
+
+    def _find_existing_report(
+        self,
+        incident_public_id: str,
+        run_id: int,
+    ) -> Report | None:
+        return self._session.scalar(
+            select(Report)
+            .join(Report.analysis_run)
+            .join(AnalysisRun.incident)
+            .where(
+                Report.analysis_run_id == run_id,
+                Report.incident_id == AnalysisRun.incident_id,
+                Incident.public_id == incident_public_id,
+            )
+        )
+
+    def _get_scoped_analysis_run(
+        self,
+        incident_public_id: str,
+        run_id: int,
+    ) -> AnalysisRun:
+        analysis_run = self._session.scalar(
+            select(AnalysisRun)
+            .join(AnalysisRun.incident)
+            .where(
+                AnalysisRun.id == run_id,
+                Incident.public_id == incident_public_id,
+            )
+        )
+        if analysis_run is None:
+            raise ReportInputUnavailableError(
+                f"Analysis run {run_id} was not found for incident "
+                f"{incident_public_id}."
+            )
+        return analysis_run
+
+    def _require_provider(self) -> AIProvider:
+        if self._ai_provider is None:
+            raise ReportProviderRequiredError(
+                "A configured AI provider is required to generate a report."
+            )
+        return self._ai_provider
+
+    @staticmethod
+    def _build_postmortem_request(report_input: ReportInput) -> AIRequest:
+        return AIRequest(
+            report_input=report_input,
+            prompts=PromptBundle(
+                system=PromptReference(
+                    name=PromptName.SYSTEM,
+                    version=PromptVersion.V1,
+                ),
+                task=PromptReference(
+                    name=PromptName.POSTMORTEM,
+                    version=PromptVersion.V2,
+                ),
+            ),
+            output_schema=OutputSchemaIdentifier.POSTMORTEM_V1,
+            metadata=SafeAIMetadata(
+                request_identifier=(
+                    f"analysis-run-{report_input.analysis_run.id}-postmortem"
+                ),
+                incident_public_identifier=report_input.incident.public_id,
+                analysis_stage=AnalysisStage.POSTMORTEM,
+            ),
+        )
+
+    @classmethod
+    def _render_postmortem(cls, output: PostmortemOutputV1) -> str:
+        lines = ["# Incident Postmortem"]
+        for position, (field_name, heading) in enumerate(
+            POSTMORTEM_SECTIONS,
+            start=1,
+        ):
+            section_text = cls._sanitize_generated_text(getattr(output, field_name))
+            lines.extend(("", f"## {position}. {heading}", "", section_text))
+        return "\n".join(lines).strip() + "\n"
+
+    @staticmethod
+    def _sanitize_generated_text(value: str) -> str:
+        normalized = value.replace("\r\n", "\n").replace("\r", "\n")
+        without_controls = "".join(
+            character
+            for character in normalized
+            if character in {"\n", "\t"} or ord(character) >= 32
+        )
+        redacted = RedactionService.redact_text(without_controls).redacted_text
+        return html.escape(redacted.strip(), quote=False)
+
+    @staticmethod
+    def _build_generation_metadata(
+        result: AIResult[PostmortemOutputV1],
+        report_input: ReportInput,
+    ) -> dict[str, object]:
+        input_payload = json.dumps(
+            report_input.model_dump(mode="json"),
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        metadata = result.metadata
+        return {
+            "provider_name": metadata.provider_name,
+            "model_name": metadata.model_name,
+            "system_prompt": {
+                "name": metadata.system_prompt.name.value,
+                "version": metadata.system_prompt.version.value,
+            },
+            "task_prompt": {
+                "name": metadata.task_prompt.name.value,
+                "version": metadata.task_prompt.version.value,
+            },
+            "output_schema": metadata.output_schema.value,
+            "request_identifier": metadata.request_identifier,
+            "attempt_count": metadata.attempt_count,
+            "report_input_sha256": sha256(input_payload.encode("utf-8")).hexdigest(),
+        }
 
     @staticmethod
     def _require_stage_outputs(

@@ -32,6 +32,8 @@ from app.schemas.ai_outputs import (
 )
 from app.schemas.evidence import EvidenceManifest, Sha256Checksum
 from app.schemas.incident import IncidentPublicId
+from app.schemas.report import ReportInput
+from app.schemas.validation import EvidenceReferenceValidationStatus
 
 
 SafeIdentifier = Annotated[
@@ -85,6 +87,7 @@ class PromptVersion(StrEnum):
     """Explicit prompt versions accepted at the typed provider boundary."""
 
     V1 = "v1"
+    V2 = "v2"
 
 
 class AnalysisStage(StrEnum):
@@ -121,6 +124,7 @@ class OutputSchemaIdentifier(StrEnum):
     CRITIC_V1 = "critic_v1"
     REASONING_RISKS_V1 = "reasoning_risks_v1"
     OPEN_QUESTIONS_V1 = "open_questions_v1"
+    POSTMORTEM_V1 = "postmortem_v1"
 
 
 class PromptReference(StrictAIContract):
@@ -161,15 +165,6 @@ class CriticContextV1(StrictAIContract):
     summary: SummaryOutputV1
     timeline: TimelineOutputV1
     hypotheses: HypothesesOutputV1
-
-
-class EvidenceReferenceValidationStatus(StrEnum):
-    """Provider-neutral deterministic outcomes for generated citations."""
-
-    VALID = "valid"
-    UNKNOWN_EVIDENCE_ID = "unknown_evidence_id"
-    INVALID_LINE_RANGE = "invalid_line_range"
-    EXCERPT_MISMATCH = "excerpt_mismatch"
 
 
 class ValidatedEvidenceReferenceV1(StrictAIContract):
@@ -248,7 +243,8 @@ class OpenQuestionsContextV1(StrictAIContract):
 class AIRequest(StrictAIContract):
     """Typed, provider-neutral input accepted by an IncidentIQ AI provider."""
 
-    evidence_manifest: EvidenceManifest
+    evidence_manifest: EvidenceManifest | None = None
+    report_input: ReportInput | None = None
     prompts: PromptBundle
     output_schema: OutputSchemaIdentifier
     metadata: SafeAIMetadata
@@ -259,6 +255,24 @@ class AIRequest(StrictAIContract):
     @model_validator(mode="after")
     def validate_analysis_context_roles(self) -> AIRequest:
         """Require each typed analysis context only for its owning stage."""
+        is_postmortem_request = self.metadata.analysis_stage is AnalysisStage.POSTMORTEM
+        if is_postmortem_request:
+            if self.report_input is None:
+                raise ValueError("postmortem requests require typed report input")
+            if self.evidence_manifest is not None:
+                raise ValueError(
+                    "postmortem requests must not include an evidence manifest"
+                )
+        else:
+            if self.evidence_manifest is None:
+                raise ValueError(
+                    "analysis requests require a redacted evidence manifest"
+                )
+            if self.report_input is not None:
+                raise ValueError(
+                    "report input is only accepted for postmortem requests"
+                )
+
         is_critic_request = self.metadata.analysis_stage is AnalysisStage.CRITIC
         is_bias_request = self.metadata.analysis_stage is AnalysisStage.BIAS
         is_open_questions_request = (

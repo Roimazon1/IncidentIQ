@@ -2,7 +2,9 @@
 
 from datetime import UTC
 
+import pytest
 from sqlalchemy import delete, inspect, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.models import AnalysisRun, Incident, Report
@@ -58,6 +60,11 @@ def test_report_model_fields_constraints_and_relationships() -> None:
         for column in (columns.incident_id, columns.analysis_run_id)
         for foreign_key in column.foreign_keys
     )
+    assert {
+        tuple(column.name for column in constraint.columns)
+        for constraint in Report.__table__.constraints
+        if constraint.name == "uq_reports_analysis_run"
+    } == {("analysis_run_id",)}
 
 
 def test_report_text_metadata_and_links_round_trip(
@@ -121,6 +128,27 @@ def test_in_place_export_metadata_change_persists(
         loaded_report = session.get(Report, report_id)
         assert loaded_report is not None
         assert loaded_report.export_metadata == {"filename": "incident-report.md"}
+
+
+def test_analysis_run_accepts_only_one_report(
+    model_session_factory: sessionmaker[Session],
+) -> None:
+    incident, analysis_run = _incident_with_analysis_run()
+    reports = [
+        Report(
+            incident=incident,
+            analysis_run=analysis_run,
+            generated_text=f"Generated {index}",
+            editable_text=f"Editable {index}",
+        )
+        for index in range(2)
+    ]
+
+    with model_session_factory() as session:
+        session.add_all(reports)
+        with pytest.raises(IntegrityError):
+            session.commit()
+        session.rollback()
 
 
 def test_database_delete_of_incident_cascades_to_report(

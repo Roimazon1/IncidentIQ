@@ -15,7 +15,7 @@ from app.models.enums import (
     HypothesisStatus,
 )
 from app.schemas.ai_outputs import OpenQuestionSourceKind
-from app.schemas.ai_provider import EvidenceReferenceValidationStatus
+from app.schemas.validation import EvidenceReferenceValidationStatus
 
 
 class ReportInputModel(BaseModel):

@@ -259,6 +259,26 @@ class CriticOutputV1(StrictAIOutputModel):
     ranking_rationale: NonBlankText
 
 
+class PostmortemOutputV1(StrictAIOutputModel):
+    """Every required Step 13 section of a generated postmortem draft."""
+
+    executive_summary: NonBlankText
+    incident_impact: NonBlankText
+    detection: NonBlankText
+    evidence_reviewed: NonBlankText
+    timeline: NonBlankText
+    confirmed_facts: NonBlankText
+    assumptions_and_unresolved_questions: NonBlankText
+    root_cause_hypotheses_and_confidence: NonBlankText
+    supporting_and_contradicting_evidence: NonBlankText
+    investigation_actions: NonBlankText
+    mitigation_and_recovery: NonBlankText
+    biases_and_reasoning_risks: NonBlankText
+    ai_limitations_and_unsupported_claims: NonBlankText
+    lessons_learned: NonBlankText
+    follow_up_actions: NonBlankText
+
+
 class CompleteAnalysisOutputV1(StrictAIOutputModel):
     """Composition of every validated version-one analysis output."""
 
@@ -281,5 +301,6 @@ AIOutput: TypeAlias = (
     | ReasoningRisksOutputV1
     | OpenQuestionsOutputV1
     | CriticOutputV1
+    | PostmortemOutputV1
     | CompleteAnalysisOutputV1
 )

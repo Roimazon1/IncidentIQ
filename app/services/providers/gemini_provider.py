@@ -378,7 +378,6 @@ class GeminiAIProvider:
     def _build_contents(request: AIRequest, task_prompt: str) -> str:
         payload: dict[str, object] = {
             "task_prompt": task_prompt,
-            "evidence_manifest": request.evidence_manifest.model_dump(mode="json"),
             "output_schema": request.output_schema.value,
             "metadata": {
                 "request_identifier": request.metadata.request_identifier,
@@ -391,6 +390,12 @@ class GeminiAIProvider:
                 ),
             },
         }
+        if request.evidence_manifest is not None:
+            payload["evidence_manifest"] = request.evidence_manifest.model_dump(
+                mode="json"
+            )
+        if request.report_input is not None:
+            payload["report_input"] = request.report_input.model_dump(mode="json")
         if request.critic_context is not None:
             payload["critic_context"] = request.critic_context.model_dump(mode="json")
         if request.bias_context is not None:
