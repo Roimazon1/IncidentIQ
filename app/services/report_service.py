@@ -9,7 +9,7 @@ from hashlib import sha256
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.models import (
     AnalysisRun,
@@ -61,6 +61,7 @@ from app.schemas.report import (
     ReportHypothesisEvidenceInput,
     ReportHypothesisInput,
     ReportIncidentInput,
+    ReportDraftUpdate,
     ReportInput,
     ReportOpenQuestionInput,
     ReportReasoningRiskInput,
@@ -120,12 +121,20 @@ class ReportProviderRequiredError(RuntimeError):
     """Raised when postmortem generation has no injected AI provider."""
 
 
+class ReportProviderExecutionError(RuntimeError):
+    """Raised when the configured provider fails report generation safely."""
+
+
 class ReportGenerationError(RuntimeError):
     """Raised when a provider result violates the postmortem contract."""
 
 
 class ReportPersistenceError(RuntimeError):
     """Raised when a generated report cannot be saved atomically."""
+
+
+class ReportNotFoundError(LookupError):
+    """Raised when a report is outside the requested incident scope."""
 
 
 class ReportService:
@@ -156,9 +165,11 @@ class ReportService:
         provider = self._require_provider()
         try:
             result = provider.generate(request)
-        except AIProviderExecutionError:
+        except AIProviderExecutionError as exc:
             self._session.rollback()
-            raise
+            raise ReportProviderExecutionError(
+                "The postmortem provider request failed safely."
+            ) from exc
         if not ai_result_matches_request(
             result,
             request=request,
@@ -213,6 +224,38 @@ class ReportService:
             self._session.rollback()
             raise ReportPersistenceError(
                 "The generated report could not be saved."
+            ) from exc
+        return report
+
+    def get_report(
+        self,
+        incident_public_id: str,
+        report_id: int,
+    ) -> Report:
+        """Return one report with its incident and analysis run loaded."""
+        report = self._find_scoped_report(incident_public_id, report_id)
+        if report is None:
+            raise ReportNotFoundError(
+                f"Report {report_id} was not found for incident {incident_public_id}."
+            )
+        return report
+
+    def save_report_edit(
+        self,
+        incident_public_id: str,
+        report_id: int,
+        update: ReportDraftUpdate,
+    ) -> Report:
+        """Persist a sanitized human draft without changing generated content."""
+        report = self.get_report(incident_public_id, report_id)
+        report.editable_text = self._sanitize_editable_text(update.editable_text)
+        try:
+            self._session.commit()
+            self._session.refresh(report)
+        except SQLAlchemyError as exc:
+            self._session.rollback()
+            raise ReportPersistenceError(
+                "The edited report could not be saved."
             ) from exc
         return report
 
@@ -361,6 +404,26 @@ class ReportService:
             )
         )
 
+    def _find_scoped_report(
+        self,
+        incident_public_id: str,
+        report_id: int,
+    ) -> Report | None:
+        return self._session.scalar(
+            select(Report)
+            .join(Report.incident)
+            .join(Report.analysis_run)
+            .options(
+                joinedload(Report.incident),
+                joinedload(Report.analysis_run),
+            )
+            .where(
+                Report.id == report_id,
+                Incident.public_id == incident_public_id,
+                Report.incident_id == AnalysisRun.incident_id,
+            )
+        )
+
     def _get_scoped_analysis_run(
         self,
         incident_public_id: str,
@@ -433,6 +496,10 @@ class ReportService:
         )
         redacted = RedactionService.redact_text(without_controls).redacted_text
         return html.escape(redacted.strip(), quote=False)
+
+    @classmethod
+    def _sanitize_editable_text(cls, value: str) -> str:
+        return cls._sanitize_generated_text(html.unescape(value))
 
     @staticmethod
     def _build_generation_metadata(

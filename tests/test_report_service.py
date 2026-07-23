@@ -44,7 +44,6 @@ from app.schemas.review import (
     TimelineReviewUpdate,
 )
 from app.services.ai_provider import (
-    AIProviderExecutionError,
     build_ai_result,
     raise_ai_provider_failure,
     resolve_request_prompts,
@@ -58,6 +57,7 @@ from app.services.report_service import (
     ReportGenerationError,
     ReportInputUnavailableError,
     ReportPersistenceError,
+    ReportProviderExecutionError,
     ReportService,
 )
 from app.services.review_service import ReviewService
@@ -777,14 +777,13 @@ def test_generation_failure_rolls_back_without_partial_report(
     provider = _FailingPostmortemProvider(failure_category)
 
     with database_session_factory() as session:
-        with pytest.raises(AIProviderExecutionError) as error:
+        with pytest.raises(ReportProviderExecutionError) as error:
             ReportService(session, ai_provider=provider).generate_draft_report(
                 reviewed_report_analysis.public_id,
                 reviewed_report_analysis.run_id,
             )
         assert session.scalar(select(func.count(Report.id))) == 0
 
-    assert error.value.details.category is failure_category
     assert RAW_PROVIDER_SECRET not in str(error.value)
     assert RAW_PROVIDER_SECRET not in repr(error.value)
 

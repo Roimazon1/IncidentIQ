@@ -9,6 +9,7 @@ from app.routers.dashboard import router as dashboard_router
 from app.routers.evidence import router as evidence_router
 from app.routers.incidents import router as incidents_router
 from app.routers.review import router as review_router
+from app.routers.reports import router as reports_router
 from app.templating import APP_DIRECTORY
 
 
@@ -25,6 +26,7 @@ app.include_router(incidents_router)
 app.include_router(evidence_router)
 app.include_router(analysis_router)
 app.include_router(review_router)
+app.include_router(reports_router)
 
 
 @app.get("/health")

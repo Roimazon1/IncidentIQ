@@ -16,28 +16,28 @@ from app.services.providers.gemini_provider import GeminiAIProvider
 _FAKE_RESPONSE_FIXTURE_PATH = (
     Path(__file__).resolve().parents[1] / "resources" / "fake_ai_core_responses.json"
 )
-_CORE_FAKE_FIXTURES = (
+_FAKE_RESPONSE_FIXTURES = (
     "valid_summary",
     "valid_timeline",
     "valid_hypotheses",
     "valid_critic",
     "valid_bias",
     "valid_open_questions",
+    "valid_postmortem",
 )
 
 
-def build_configured_analysis_service(
-    session: Session,
+def build_configured_ai_provider(
     settings: Settings,
-) -> AnalysisService:
-    """Build an analysis service with the settings-selected concrete provider."""
+) -> AIProvider:
+    """Build the settings-selected provider shared by AI-assisted services."""
     prompt_registry = PromptRegistry()
 
     def build_fake_provider(configured_settings: Settings) -> AIProvider:
         del configured_settings
         return FakeAIProvider.from_file_set(
             _FAKE_RESPONSE_FIXTURE_PATH,
-            _CORE_FAKE_FIXTURES,
+            _FAKE_RESPONSE_FIXTURES,
             prompt_resolver=prompt_registry.resolve_content,
             prompt_bundle_validator=prompt_registry.validate_bundle,
         )
@@ -49,10 +49,18 @@ def build_configured_analysis_service(
             prompt_bundle_validator=prompt_registry.validate_bundle,
         )
 
-    provider = AIProviderFactory(
+    return AIProviderFactory(
         fake_builder=build_fake_provider,
         gemini_builder=build_gemini_provider,
     ).create(settings)
+
+
+def build_configured_analysis_service(
+    session: Session,
+    settings: Settings,
+) -> AnalysisService:
+    """Build an analysis service with the settings-selected concrete provider."""
+    provider = build_configured_ai_provider(settings)
     model_name = (
         FakeAIProvider.model_name
         if settings.ai_provider == FakeAIProvider.provider_name

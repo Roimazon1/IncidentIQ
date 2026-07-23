@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+
+{% block title %}Postmortem draft | {{ incident.public_id }} | {{ app_name }}{% endblock %}
+
+{% block content %}
+  <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4">
+    <div>
+      <a
+        class="btn btn-sm btn-outline-secondary mb-2"
+        href="{{ url_for(
+          'analysis_detail',
+          public_id=incident.public_id,
+          run_id=analysis_run.id
+        ) }}"
+      >
+        &larr; Back to analysis run {{ analysis_run.id }}
+      </a>
+      <h1 class="h2 mb-1">Editable postmortem draft</h1>
+      <p class="text-body-secondary mb-0">
+        {{ incident.public_id }} &middot; {{ incident.name }}
+      </p>
+    </div>
+    <span class="badge text-bg-warning">Human review required</span>
+  </div>
+
+  <div class="alert alert-info border-0 shadow-sm" role="note">
+    This draft is AI-assisted and editable by a human reviewer. It does not confirm
+    a root cause, authorize operational changes, or execute recommended actions.
+  </div>
+
+  <div class="row g-4">
+    <section class="col-12 col-xl-6" aria-labelledby="report-preview-heading">
+      <div class="card border-0 shadow-sm h-100">
+        <div class="card-body p-4">
+          <h2 class="h4" id="report-preview-heading">Current human draft preview</h2>
+          <p class="small text-body-secondary">
+            Plain-text preview of the currently persisted editable content.
+          </p>
+          <pre class="border rounded bg-body-tertiary p-3 text-wrap mb-0">{{ report.editable_text }}</pre>
+        </div>
+      </div>
+    </section>
+
+    <section class="col-12 col-xl-6" aria-labelledby="report-editor-heading">
+      <div class="card border-primary shadow-sm h-100">
+        <div class="card-body p-4">
+          <h2 class="h4" id="report-editor-heading">Edit human draft</h2>
+          <p class="small text-body-secondary">
+            Saving changes updates only the human-editable copy. The original
+            AI-generated draft remains unchanged.
+          </p>
+          <form
+            method="post"
+            action="{{ url_for(
+              'save_report',
+              public_id=incident.public_id,
+              report_id=report.id
+            ) }}"
+          >
+            <label class="form-label fw-semibold" for="editable_text">
+              Postmortem content
+            </label>
+            <textarea
+              class="form-control font-monospace"
+              id="editable_text"
+              name="editable_text"
+              rows="30"
+              maxlength="200000"
+              required
+            >{{ report.editable_text }}</textarea>
+            <button
+              class="btn btn-primary mt-3"
+              type="submit"
+              data-loading-label="Saving draft…"
+            >
+              Save human draft
+            </button>
+          </form>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <section class="card border-0 shadow-sm mt-4" aria-labelledby="generated-draft-heading">
+    <div class="card-body p-4">
+      <h2 class="h4" id="generated-draft-heading">Original AI-generated draft</h2>
+      <p class="text-body-secondary">
+        Immutable generation record retained separately from human edits.
+      </p>
+      <details>
+        <summary class="fw-semibold">Show original generated content</summary>
+        <pre class="border rounded bg-body-tertiary p-3 text-wrap mt-3 mb-0">{{ report.generated_text }}</pre>
+      </details>
+    </div>
+  </section>
+
+  {% set generation = report.export_metadata.get("generation", {}) %}
+  <section class="card border-0 shadow-sm mt-4" aria-labelledby="report-audit-heading">
+    <div class="card-body p-4">
+      <h2 class="h4" id="report-audit-heading">Safe generation metadata</h2>
+      <dl class="row mb-0">
+        <dt class="col-sm-4">Provider</dt>
+        <dd class="col-sm-8">{{ generation.get("provider_name", "Unavailable") }}</dd>
+        <dt class="col-sm-4">Model</dt>
+        <dd class="col-sm-8">{{ generation.get("model_name", "Unavailable") }}</dd>
+        <dt class="col-sm-4">Task prompt</dt>
+        <dd class="col-sm-8 mb-0">
+          {% set task_prompt = generation.get("task_prompt", {}) %}
+          {{ task_prompt.get("name", "Unavailable") }}
+          {{ task_prompt.get("version", "") }}
+        </dd>
+      </dl>
+    </div>
+  </section>
+{% endblock %}

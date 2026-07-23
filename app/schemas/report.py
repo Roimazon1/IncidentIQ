@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
+from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, StringConstraints
 
 from app.models.enums import (
     AnalysisRunStatus,
@@ -275,3 +276,14 @@ class ReportInput(ReportInputModel):
     open_questions: tuple[ReportOpenQuestionInput, ...]
     human_notes: tuple[ReportHumanNoteInput, ...]
     validation: ReportValidationInput
+
+
+class ReportDraftUpdate(BaseModel):
+    """Validated human edit submitted from the report preview."""
+
+    editable_text: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=200_000),
+    ]
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
