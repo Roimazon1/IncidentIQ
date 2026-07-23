@@ -26,10 +26,51 @@
     </div>
   {% endif %}
 
-  {% if page.summary_output %}
-    <section class="card border-0 shadow-sm mb-4" aria-labelledby="summary-heading">
-      <div class="card-body p-4">
-        <h2 class="h4" id="summary-heading">Summary</h2>
+  <aside class="alert alert-info border-0 shadow-sm mb-4" aria-labelledby="review-guidance-heading">
+    <h2 class="h5" id="review-guidance-heading">Human review required</h2>
+    <p>
+      This AI-generated analysis does not confirm a root cause or authorize an
+      operational change.
+    </p>
+    <div class="d-flex flex-wrap gap-2" aria-label="Analysis uncertainty key">
+      <span class="badge text-bg-success">Facts: evidence-validated</span>
+      <span class="badge text-bg-warning">Assumptions: unverified</span>
+      <span class="badge text-bg-secondary">Hypotheses: require testing</span>
+      <span class="badge text-bg-info">Actions: proposed, never auto-executed</span>
+    </div>
+  </aside>
+
+  <nav
+    class="card border-0 shadow-sm mb-4"
+    aria-label="Analysis sections"
+  >
+    <div class="card-body d-flex flex-wrap align-items-center gap-2 p-3">
+      <span class="small fw-semibold text-body-secondary me-1">On this page</span>
+      <a class="btn btn-sm btn-outline-secondary" href="#summary-section">Summary</a>
+      <a class="btn btn-sm btn-outline-secondary" href="#evidence-section">Evidence</a>
+      <a class="btn btn-sm btn-outline-secondary" href="#facts-assumptions-section">
+        Facts &amp; assumptions
+      </a>
+      <a class="btn btn-sm btn-outline-secondary" href="#timeline-section">Timeline</a>
+      <a class="btn btn-sm btn-outline-secondary" href="#hypotheses-section">Hypotheses</a>
+      <a class="btn btn-sm btn-outline-secondary" href="#next-actions-section">
+        Next actions
+      </a>
+      <a class="btn btn-sm btn-outline-secondary" href="#reasoning-risks-section">
+        Reasoning risks
+      </a>
+      <a class="btn btn-sm btn-outline-secondary" href="#ai-audit-section">AI audit</a>
+    </div>
+  </nav>
+
+  <section
+    class="card border-0 shadow-sm mb-4"
+    id="summary-section"
+    aria-labelledby="summary-heading"
+  >
+    <div class="card-body p-4">
+      <h2 class="h4" id="summary-heading">Summary</h2>
+      {% if page.summary_output %}
         <p>{{ page.summary_output.summary.text }}</p>
         <dl class="mb-0">
           <dt>Impact</dt>
@@ -47,11 +88,50 @@
             </dd>
           {% endif %}
         </dl>
-      </div>
-    </section>
-  {% endif %}
+      {% else %}
+        <p class="text-body-secondary mb-0">
+          No completed summary is available for this analysis run.
+        </p>
+      {% endif %}
+    </div>
+  </section>
 
-  <div class="row g-4 mb-4">
+  <section
+    class="card border-0 shadow-sm mb-4"
+    id="evidence-section"
+    aria-labelledby="evidence-heading"
+  >
+    <div class="card-body p-4">
+      <div class="d-flex flex-wrap justify-content-between align-items-start gap-3">
+        <div>
+          <h2 class="h4" id="evidence-heading">Evidence</h2>
+          <p class="text-body-secondary mb-0">
+            These evidence identifiers define the redacted input set used for this
+            run. Review the saved incident evidence before accepting a claim.
+          </p>
+        </div>
+        <a
+          class="btn btn-sm btn-outline-primary"
+          href="{{ url_for('new_evidence_form', public_id=incident.public_id) }}?tab=saved"
+        >
+          Review incident evidence
+        </a>
+      </div>
+      <div class="d-flex flex-wrap gap-2 mt-3" aria-label="Input evidence identifiers">
+        {% for evidence_code in analysis_run.input_evidence_codes %}
+          <span class="badge text-bg-light border">{{ evidence_code }}</span>
+        {% else %}
+          <span class="text-body-secondary">No input evidence identifiers are available.</span>
+        {% endfor %}
+      </div>
+    </div>
+  </section>
+
+  <div
+    class="row g-4 mb-4"
+    id="facts-assumptions-section"
+    aria-label="Facts and assumptions"
+  >
     <div class="col-lg-6">
       <section class="card border-success shadow-sm mb-4" aria-labelledby="facts-heading">
         <div class="card-body p-4">
@@ -134,7 +214,11 @@
     </div>
   </div>
 
-  <section class="card border-0 shadow-sm mb-4" aria-labelledby="timeline-heading">
+  <section
+    class="card border-0 shadow-sm mb-4"
+    id="timeline-section"
+    aria-labelledby="timeline-heading"
+  >
     <div class="card-body p-4">
       <h2 class="h4" id="timeline-heading">Timeline</h2>
       {% if analysis_run.timeline_events %}
@@ -183,7 +267,11 @@
     </div>
   </section>
 
-  <section class="card border-0 shadow-sm mb-4" aria-labelledby="hypotheses-heading">
+  <section
+    class="card border-0 shadow-sm mb-4"
+    id="hypotheses-section"
+    aria-labelledby="hypotheses-heading"
+  >
     <div class="card-body p-4">
       <h2 class="h4" id="hypotheses-heading">Ranked hypotheses</h2>
       <p class="small text-body-secondary">
@@ -292,7 +380,26 @@
     </section>
   {% endif %}
 
-  <section class="card border-warning shadow-sm mb-4" aria-labelledby="reasoning-risks-heading">
+  <section
+    class="card border-info shadow-sm mb-4"
+    id="next-actions-section"
+    aria-labelledby="next-actions-heading"
+  >
+    <div class="card-body p-4">
+      <h2 class="h4" id="next-actions-heading">Next actions</h2>
+      <p class="text-body-secondary">
+        Recommended actions require human approval. IncidentIQ never executes
+        commands or remediation automatically.
+      </p>
+      <p class="mb-0">No recommended actions are available for this analysis run.</p>
+    </div>
+  </section>
+
+  <section
+    class="card border-warning shadow-sm mb-4"
+    id="reasoning-risks-section"
+    aria-labelledby="reasoning-risks-heading"
+  >
     <div class="card-body p-4">
       <h2 class="h4" id="reasoning-risks-heading">Reasoning risks and fallacies</h2>
       <p class="text-body-secondary">
@@ -361,9 +468,17 @@
     </div>
   </section>
 
-  <section class="card border-0 shadow-sm" aria-labelledby="audit-heading">
+  <section
+    class="card border-0 shadow-sm"
+    id="ai-audit-section"
+    aria-labelledby="audit-heading"
+  >
     <div class="card-body p-4">
-      <h2 class="h4" id="audit-heading">Analysis traceability</h2>
+      <h2 class="h4" id="audit-heading">AI audit</h2>
+      <p class="small text-body-secondary">
+        Audit metadata explains how this run was generated; it does not validate the
+        AI conclusions.
+      </p>
       <dl class="row mb-0">
         <dt class="col-sm-3">Provider and model</dt>
         <dd class="col-sm-9">{{ analysis_run.provider_name }} / {{ analysis_run.model_name }}</dd>

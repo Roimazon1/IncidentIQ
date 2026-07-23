@@ -212,7 +212,32 @@ def test_fake_analysis_can_be_run_and_reopened_without_exposing_raw_audit(
 
     assert detail_response.status_code == 200
     assert "COMPLETED" in detail_response.text
+    assert "Human review required" in detail_response.text
+    assert "AI-generated analysis" in detail_response.text
+    assert 'aria-label="Analysis uncertainty key"' in detail_response.text
+    assert "Facts: evidence-validated" in detail_response.text
+    assert "Assumptions: unverified" in detail_response.text
+    assert "Hypotheses: require testing" in detail_response.text
+    assert "Actions: proposed, never auto-executed" in detail_response.text
+    assert 'aria-label="Analysis sections"' in detail_response.text
+    for section_id in (
+        "summary-section",
+        "evidence-section",
+        "facts-assumptions-section",
+        "timeline-section",
+        "hypotheses-section",
+        "next-actions-section",
+        "reasoning-risks-section",
+        "ai-audit-section",
+    ):
+        assert f'id="{section_id}"' in detail_response.text
+        assert f'href="#{section_id}"' in detail_response.text
     assert "Checkout requests are failing." in detail_response.text
+    assert "Review incident evidence" in detail_response.text
+    assert (
+        'href="http://testserver/incidents/INC-000001/evidence/new?tab=saved"'
+        in detail_response.text
+    )
     assert "Confirmed facts" in detail_response.text
     assert "The redacted checkout log contains a failure." in detail_response.text
     assert "SUPPORTED" in detail_response.text
@@ -261,6 +286,11 @@ def test_fake_analysis_can_be_run_and_reopened_without_exposing_raw_audit(
     assert "fake / fixture-v1" in detail_response.text
     assert "summary v1" in detail_response.text
     assert "E-001" in detail_response.text
+    assert "Next actions" in detail_response.text
+    assert "No recommended actions are available for this analysis run." in (
+        detail_response.text
+    )
+    assert "AI audit" in detail_response.text
     assert "local-secret" not in detail_response.text
     assert '"raw_response"' not in detail_response.text
     assert '"hypotheses":[' not in detail_response.text
