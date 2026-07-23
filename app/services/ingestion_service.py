@@ -86,8 +86,10 @@ class IngestionService:
         self,
         incident_public_id: str,
         uploads: Sequence[EvidenceUpload],
+        *,
+        commit: bool = True,
     ) -> list[EvidenceItem]:
-        """Decode and persist an uploaded file batch in one transaction."""
+        """Decode and persist uploads with an optional caller-managed transaction."""
         if not uploads:
             raise EvidenceUploadValidationError(
                 "At least one uploaded evidence file is required."
@@ -102,6 +104,7 @@ class IngestionService:
             incident,
             evidence_data,
             failure_message="The uploaded evidence could not be saved.",
+            commit=commit,
         )
 
     def list_evidence_metadata(self, incident_id: int) -> list[EvidenceItem]:
@@ -256,6 +259,7 @@ class IngestionService:
         evidence_data: Sequence[EvidenceCreate],
         *,
         failure_message: str,
+        commit: bool = True,
     ) -> list[EvidenceItem]:
         incident_service = IncidentService(self.session)
         first_sequence = self._next_evidence_sequence(incident.id)
@@ -275,7 +279,8 @@ class IngestionService:
         try:
             self.session.flush()
             incident_service.recalculate_status(incident)
-            self.session.commit()
+            if commit:
+                self.session.commit()
         except SQLAlchemyError as exc:
             self.session.rollback()
             raise EvidencePersistenceError(failure_message) from exc
