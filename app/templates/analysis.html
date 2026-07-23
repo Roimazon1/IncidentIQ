@@ -2,8 +2,35 @@
 
 {% block title %}Analysis {{ analysis_run.id }} | {{ app_name }}{% endblock %}
 
+{% macro evidence_reference_links(evidence_codes, incident, evidence_by_code, aria_label) %}
+  <div class="d-flex flex-wrap gap-2" aria-label="{{ aria_label }}">
+    {% for evidence_code in evidence_codes %}
+      {% set evidence = evidence_by_code.get(evidence_code) %}
+      {% if evidence %}
+        <a
+          class="badge rounded-pill text-bg-light border text-decoration-none"
+          href="{{ url_for(
+            'evidence_preview',
+            public_id=incident.public_id,
+            evidence_code=evidence_code
+          ) }}"
+          aria-label="Open evidence {{ evidence_code }} from {{ evidence.source_name }}"
+        >
+          {{ evidence_code }}
+        </a>
+      {% else %}
+        <span class="badge rounded-pill text-bg-danger">
+          {{ evidence_code }} unavailable
+        </span>
+      {% endif %}
+    {% else %}
+      <span class="small text-danger">No evidence was cited.</span>
+    {% endfor %}
+  </div>
+{% endmacro %}
+
 {% macro fact_evidence_links(fact, incident, evidence_by_code) %}
-  <div class="mt-2" aria-label="Evidence references for this claim">
+  <div class="mt-2">
     <div class="small fw-semibold text-body-secondary mb-1">
       {% if fact.support_status.value == "SUPPORTED" %}
         Validated evidence
@@ -11,30 +38,12 @@
         Cited evidence
       {% endif %}
     </div>
-    <div class="d-flex flex-wrap gap-2">
-      {% for evidence_code in fact.evidence_codes %}
-        {% set evidence = evidence_by_code.get(evidence_code) %}
-        {% if evidence %}
-          <a
-            class="badge rounded-pill text-bg-light border text-decoration-none"
-            href="{{ url_for(
-              'evidence_preview',
-              public_id=incident.public_id,
-              evidence_code=evidence_code
-            ) }}"
-            aria-label="Open evidence {{ evidence_code }} from {{ evidence.source_name }}"
-          >
-            {{ evidence_code }}
-          </a>
-        {% else %}
-          <span class="badge rounded-pill text-bg-danger">
-            {{ evidence_code }} unavailable
-          </span>
-        {% endif %}
-      {% else %}
-        <span class="small text-danger">No evidence was cited.</span>
-      {% endfor %}
-    </div>
+    {{ evidence_reference_links(
+      fact.evidence_codes,
+      incident,
+      evidence_by_code,
+      "Evidence references for this claim"
+    ) }}
   </div>
   {% if fact.supporting_excerpt %}
     <blockquote class="border-start border-3 ps-3 mt-3 mb-0">
@@ -283,24 +292,42 @@
       {% if analysis_run.timeline_events %}
         <ol class="list-group list-group-numbered">
           {% for event in analysis_run.timeline_events %}
-            <li class="list-group-item d-flex justify-content-between align-items-start gap-3">
-              <div class="ms-2 me-auto">
-                <div>{{ event.description }}</div>
-                <div class="small text-body-secondary mt-1">
-                  {% if event.event_time %}
-                    <time datetime="{{ event.event_time.isoformat() }}">
-                      {{ event.event_time | incident_datetime }}
-                    </time>
-                  {% else %}
-                    Time unknown
-                  {% endif %}
-                  · Confidence {{ event.confidence }}%
-                  · Evidence {{ event.evidence_codes | join(", ") }}
+            <li class="list-group-item d-flex align-items-start">
+              <div class="ms-2 me-auto w-100">
+                <div class="d-flex flex-wrap justify-content-between align-items-start gap-2">
+                  <div>
+                    <div>{{ event.description }}</div>
+                    <div class="small text-body-secondary mt-1">
+                      {% if event.event_time %}
+                        <time datetime="{{ event.event_time.isoformat() }}">
+                          {{ event.event_time | incident_datetime }}
+                        </time>
+                      {% else %}
+                        Time unknown
+                      {% endif %}
+                    </div>
+                  </div>
+                  <div class="d-flex flex-wrap gap-2">
+                    <span class="badge {% if event.is_inferred %}text-bg-warning{% else %}text-bg-primary{% endif %}">
+                      {% if event.is_inferred %}Inferred{% else %}Direct{% endif %}
+                    </span>
+                    <span class="badge text-bg-light border">
+                      Confidence {{ event.confidence }}%
+                    </span>
+                  </div>
+                </div>
+                <div class="mt-2">
+                  <div class="small fw-semibold text-body-secondary mb-1">
+                    Evidence references
+                  </div>
+                  {{ evidence_reference_links(
+                    event.evidence_codes,
+                    incident,
+                    page.evidence_by_code,
+                    "Evidence references for this timeline event"
+                  ) }}
                 </div>
               </div>
-              <span class="badge {% if event.is_inferred %}text-bg-warning{% else %}text-bg-primary{% endif %}">
-                {% if event.is_inferred %}Inferred{% else %}Direct{% endif %}
-              </span>
             </li>
           {% endfor %}
         </ol>

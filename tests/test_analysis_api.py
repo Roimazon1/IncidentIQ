@@ -126,6 +126,35 @@ class _HighConfidenceTimelineProvider:
         )
 
 
+class _MissingTimelineEvidenceProvider:
+    def __init__(self, delegate: FakeAIProvider) -> None:
+        self._delegate = delegate
+
+    def generate(self, request: AIRequest) -> AIResult[AIOutput]:
+        result = self._delegate.generate(request)
+        if request.metadata.analysis_stage is not AnalysisStage.TIMELINE:
+            return result
+        output = result.output
+        assert isinstance(output, TimelineOutputV1)
+        event = output.events[0]
+        missing_reference = event.evidence[0].model_copy(
+            update={"evidence_id": "E-999"}
+        )
+        modified_output = output.model_copy(
+            update={
+                "events": (
+                    event.model_copy(update={"evidence": (missing_reference,)}),
+                    *output.events[1:],
+                )
+            }
+        )
+        return AIResult[AIOutput](
+            output=modified_output,
+            metadata=result.metadata,
+            audit=result.audit,
+        )
+
+
 class _ContradictingHypothesisProvider:
     def __init__(self, delegate: FakeAIProvider) -> None:
         self._delegate = delegate
@@ -417,15 +446,78 @@ def test_inferred_provider_confidence_is_capped_after_auditing(
 
     assert start_response.status_code == 303
     assert detail_response.status_code == 200
+    assert "Direct" in detail_response.text
+    assert "Inferred" in detail_response.text
     assert "Confidence 88%" in detail_response.text
     assert "Confidence 70%" in detail_response.text
     assert "Confidence 95%" not in detail_response.text
+    assert (
+        'aria-label="Evidence references for this timeline event"'
+        in detail_response.text
+    )
+    assert (
+        f'href="http://testserver/incidents/{public_id}/evidence/E-001"'
+        in detail_response.text
+    )
     assert "Inference uncertainty" in detail_response.text
     assert (
         "Only one captured failure is available, so the start time cannot be "
         "established."
     ) in detail_response.text
     assert '"raw_response"' not in detail_response.text
+
+
+def test_timeline_marks_missing_evidence_unavailable_without_broken_link_or_leak(
+    database_client: TestClient,
+    database_session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = PromptRegistry()
+    provider = _MissingTimelineEvidenceProvider(
+        FakeAIProvider.from_file_set(
+            FIXTURE_PATH,
+            CORE_FIXTURES,
+            prompt_resolver=registry.resolve_content,
+            prompt_bundle_validator=registry.validate_bundle,
+        )
+    )
+    monkeypatch.setattr(
+        analysis_router,
+        "build_configured_analysis_service",
+        _configured_service_builder(provider),
+    )
+    public_id = _create_ready_incident(database_client)
+
+    start_response = database_client.post(
+        f"/incidents/{public_id}/analysis",
+        follow_redirects=False,
+    )
+
+    with database_session_factory() as session:
+        analysis_run = session.scalar(
+            select(AnalysisRun).options(selectinload(AnalysisRun.timeline_events))
+        )
+        assert analysis_run is not None
+        direct_event = next(
+            event for event in analysis_run.timeline_events if not event.is_inferred
+        )
+        assert direct_event.evidence_codes == ["E-999"]
+        direct_confidence = direct_event.confidence
+
+    detail_response = database_client.get(start_response.headers["location"])
+
+    assert detail_response.status_code == 200
+    assert "The checkout log records a failed request." in detail_response.text
+    assert "Direct" in detail_response.text
+    assert f"Confidence {direct_confidence}%" in detail_response.text
+    assert "E-999 unavailable" in detail_response.text
+    assert (
+        f'href="http://testserver/incidents/{public_id}/evidence/E-999"'
+        not in detail_response.text
+    )
+    assert '"raw_response"' not in detail_response.text
+    assert '"events":[' not in detail_response.text
+    assert "local-secret" not in detail_response.text
 
 
 def test_out_of_range_fact_is_separate_from_confirmed_facts(
