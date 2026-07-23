@@ -191,6 +191,45 @@ class _ContradictingHypothesisProvider:
         )
 
 
+class _MissingHypothesisEvidenceProvider:
+    def __init__(self, delegate: FakeAIProvider) -> None:
+        self._delegate = delegate
+
+    def generate(self, request: AIRequest) -> AIResult[AIOutput]:
+        result = self._delegate.generate(request)
+        if request.metadata.analysis_stage is not AnalysisStage.HYPOTHESES:
+            return result
+        output = result.output
+        assert isinstance(output, HypothesesOutputV1)
+        first_hypothesis = output.hypotheses[0]
+        supporting_evidence = first_hypothesis.supporting_evidence[0]
+        missing_reference = supporting_evidence.reference.model_copy(
+            update={"evidence_id": "E-999"}
+        )
+        modified_hypothesis = first_hypothesis.model_copy(
+            update={
+                "supporting_evidence": (
+                    supporting_evidence.model_copy(
+                        update={"reference": missing_reference}
+                    ),
+                )
+            }
+        )
+        modified_output = output.model_copy(
+            update={
+                "hypotheses": (
+                    modified_hypothesis,
+                    *output.hypotheses[1:],
+                )
+            }
+        )
+        return AIResult[AIOutput](
+            output=modified_output,
+            metadata=result.metadata,
+            audit=result.audit,
+        )
+
+
 def _configured_service_builder(
     provider: AIProvider,
 ) -> Callable[[Session, Settings], AnalysisService]:
@@ -325,6 +364,20 @@ def test_fake_analysis_can_be_run_and_reopened_without_exposing_raw_audit(
     assert "Database connection pool exhaustion" in detail_response.text
     assert "Recent deployment regression" in detail_response.text
     assert "External payment dependency failure" in detail_response.text
+    assert "Evidence for" in detail_response.text
+    assert "Evidence against" in detail_response.text
+    assert "Missing evidence" in detail_response.text
+    assert "Recommended validation test" in detail_response.text
+    assert "Expected if true" in detail_response.text
+    assert "Expected if false" in detail_response.text
+    assert (
+        'aria-label="Supporting evidence for hypothesis 1"'
+        in detail_response.text
+    )
+    assert "Pool saturation aligns with the failures." in detail_response.text
+    assert "The pool retained available capacity during failures." in (
+        detail_response.text
+    )
     assert "not confirmed root causes" in detail_response.text
     assert "Adversarial critique" in detail_response.text
     assert "The top hypothesis is only weakly distinguished" in detail_response.text
@@ -668,10 +721,72 @@ def test_valid_contradiction_remains_visible_with_adjusted_confidence(
 
     assert detail_response.status_code == 200
     assert "Confidence 50%" in detail_response.text
-    assert "Contradicting evidence" in detail_response.text
+    assert "Evidence against" in detail_response.text
+    assert (
+        'aria-label="Contradicting evidence for hypothesis 1"'
+        in detail_response.text
+    )
+    assert (
+        f'href="http://testserver/incidents/{public_id}/evidence/E-001"'
+        in detail_response.text
+    )
     assert "E-001" in detail_response.text
     assert "Confidence is reduced deterministically" in detail_response.text
     assert '"raw_response"' not in detail_response.text
+
+
+def test_hypothesis_marks_missing_supporting_evidence_without_broken_link_or_leak(
+    database_client: TestClient,
+    database_session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = PromptRegistry()
+    provider = _MissingHypothesisEvidenceProvider(
+        FakeAIProvider.from_file_set(
+            FIXTURE_PATH,
+            CORE_FIXTURES,
+            prompt_resolver=registry.resolve_content,
+            prompt_bundle_validator=registry.validate_bundle,
+        )
+    )
+    monkeypatch.setattr(
+        analysis_router,
+        "build_configured_analysis_service",
+        _configured_service_builder(provider),
+    )
+    public_id = _create_ready_incident(database_client)
+
+    start_response = database_client.post(
+        f"/incidents/{public_id}/analysis",
+        follow_redirects=False,
+    )
+
+    with database_session_factory() as session:
+        analysis_run = session.scalar(
+            select(AnalysisRun).options(selectinload(AnalysisRun.hypotheses))
+        )
+        assert analysis_run is not None
+        top_hypothesis = min(analysis_run.hypotheses, key=lambda item: item.rank)
+        assert top_hypothesis.supporting_evidence_codes == ["E-999"]
+        top_confidence = top_hypothesis.confidence
+
+    detail_response = database_client.get(start_response.headers["location"])
+
+    assert detail_response.status_code == 200
+    assert "Database connection pool exhaustion" in detail_response.text
+    assert f"Confidence {top_confidence}%" in detail_response.text
+    assert "Evidence for" in detail_response.text
+    assert "E-999 unavailable" in detail_response.text
+    assert (
+        f'href="http://testserver/incidents/{public_id}/evidence/E-999"'
+        not in detail_response.text
+    )
+    assert "Evidence against" in detail_response.text
+    assert "Missing evidence" in detail_response.text
+    assert "Recommended validation test" in detail_response.text
+    assert '"raw_response"' not in detail_response.text
+    assert '"hypotheses":[' not in detail_response.text
+    assert "local-secret" not in detail_response.text
 
 
 def test_running_analysis_renders_pending_page(
