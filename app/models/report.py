@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import JSON, ForeignKey, Text
+from sqlalchemy import JSON, ForeignKey, Text, UniqueConstraint
 from sqlalchemy.ext.mutable import MutableDict
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -20,6 +20,12 @@ class Report(TimestampMixin, Base):
     """A generated report draft and its separately preserved human edits."""
 
     __tablename__ = "reports"
+    __table_args__ = (
+        UniqueConstraint(
+            "analysis_run_id",
+            name="uq_reports_analysis_run",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     incident_id: Mapped[int] = mapped_column(

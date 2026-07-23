@@ -457,6 +457,7 @@ def test_provider_call_output_schema_identifiers_are_stage_only() -> None:
         "critic_v1",
         "reasoning_risks_v1",
         "open_questions_v1",
+        "postmortem_v1",
     }
 
 

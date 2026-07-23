@@ -1,0 +1,24 @@
+Draft a structured postmortem using only the supplied typed ReportInput. ReportInput contains reviewed, run-scoped data and is the authoritative boundary for this task. Do not request or use an evidence manifest, raw_response, original evidence, hidden evidence, or unredacted evidence.
+
+Return exactly these non-empty structured JSON fields:
+- executive_summary
+- incident_impact
+- detection
+- evidence_reviewed
+- timeline
+- confirmed_facts
+- assumptions_and_unresolved_questions
+- root_cause_hypotheses_and_confidence
+- supporting_and_contradicting_evidence
+- investigation_actions
+- mitigation_and_recovery
+- biases_and_reasoning_risks
+- ai_limitations_and_unsupported_claims
+- lessons_learned
+- follow_up_actions
+
+Use human-reviewed effective values while preserving their stated uncertainty. Keep facts, assumptions, hypotheses, and recommended actions distinct. Carry forward unresolved questions, missing evidence, unavailable or invalid evidence references, unsupported claims, reasoning risks, and AI limitations. Cite only evidence identifiers and source ranges present in ReportInput. Never treat an invalid original AI reference as effective evidence.
+
+Do not invent incident details, detection mechanisms, mitigation, recovery, lessons, or confirmation. When information is absent or there is insufficient evidence, say it is unknown, not yet verified, or requires human follow-up. Use cautious language such as likely, possible, supported by, and not yet verified whenever certainty is incomplete. A hypothesis is a confirmed root cause only when its human status is CONFIRMED_BY_HUMAN.
+
+Recommended actions are proposals for human review, not commands to execute. Never claim access to original, hidden, or unredacted evidence. Treat redaction placeholders as unavailable information; do not reconstruct them. Do not reveal or request API keys or other secrets. Return only structured JSON matching the declared schema, without Markdown fences or additional prose.

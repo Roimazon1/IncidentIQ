@@ -24,27 +24,48 @@ from app.services.prompt_registry import (
 
 
 EXPECTED_PROMPTS = {
-    PromptName.SYSTEM: ("system_v1.txt", AnalysisStage.SYSTEM, PromptRole.SYSTEM),
-    PromptName.SUMMARY: ("summary_v1.txt", AnalysisStage.SUMMARY, PromptRole.TASK),
-    PromptName.TIMELINE: (
+    (PromptName.SYSTEM, PromptVersion.V1): (
+        "system_v1.txt",
+        AnalysisStage.SYSTEM,
+        PromptRole.SYSTEM,
+    ),
+    (PromptName.SUMMARY, PromptVersion.V1): (
+        "summary_v1.txt",
+        AnalysisStage.SUMMARY,
+        PromptRole.TASK,
+    ),
+    (PromptName.TIMELINE, PromptVersion.V1): (
         "timeline_v1.txt",
         AnalysisStage.TIMELINE,
         PromptRole.TASK,
     ),
-    PromptName.HYPOTHESES: (
+    (PromptName.HYPOTHESES, PromptVersion.V1): (
         "hypotheses_v1.txt",
         AnalysisStage.HYPOTHESES,
         PromptRole.TASK,
     ),
-    PromptName.CRITIC: ("critic_v1.txt", AnalysisStage.CRITIC, PromptRole.TASK),
-    PromptName.BIAS: ("bias_v1.txt", AnalysisStage.BIAS, PromptRole.TASK),
-    PromptName.OPEN_QUESTIONS: (
+    (PromptName.CRITIC, PromptVersion.V1): (
+        "critic_v1.txt",
+        AnalysisStage.CRITIC,
+        PromptRole.TASK,
+    ),
+    (PromptName.BIAS, PromptVersion.V1): (
+        "bias_v1.txt",
+        AnalysisStage.BIAS,
+        PromptRole.TASK,
+    ),
+    (PromptName.OPEN_QUESTIONS, PromptVersion.V1): (
         "open_questions_v1.txt",
         AnalysisStage.OPEN_QUESTIONS,
         PromptRole.TASK,
     ),
-    PromptName.POSTMORTEM: (
+    (PromptName.POSTMORTEM, PromptVersion.V1): (
         "postmortem_v1.txt",
+        AnalysisStage.POSTMORTEM,
+        PromptRole.TASK,
+    ),
+    (PromptName.POSTMORTEM, PromptVersion.V2): (
+        "postmortem_v2.txt",
         AnalysisStage.POSTMORTEM,
         PromptRole.TASK,
     ),
@@ -64,11 +85,13 @@ def test_every_listed_prompt_is_registered_loadable_and_mapped() -> None:
     assert len(registry.registrations) == len(EXPECTED_PROMPTS)
     for registration in registry.registrations:
         expected_file, expected_stage, expected_role = EXPECTED_PROMPTS[
-            registration.reference.name
+            (
+                registration.reference.name,
+                registration.reference.version,
+            )
         ]
         resolved = registry.resolve(registration.reference)
 
-        assert registration.reference.version is PromptVersion.V1
         assert registration.file_path.name == expected_file
         assert registration.file_path.is_file()
         assert registration.stage is expected_stage
@@ -248,6 +271,12 @@ def test_stage_prompts_use_their_declared_uncertainty_fields() -> None:
             version=PromptVersion.V1,
         )
     ).lower()
+    postmortem = registry.resolve_content(
+        PromptReference(
+            name=PromptName.POSTMORTEM,
+            version=PromptVersion.V2,
+        )
+    ).lower()
 
     assert "summary.uncertainty" in summary
     assert "unknowns" in summary
@@ -286,6 +315,28 @@ def test_stage_prompts_use_their_declared_uncertainty_fields() -> None:
     assert "confirmed root cause" in open_questions
     assert "hypothesis_id|evidence_id|line_range" in open_questions
     assert "never use only the hypothesis id" in open_questions
+    assert all(
+        field in postmortem
+        for field in (
+            "executive_summary",
+            "incident_impact",
+            "detection",
+            "evidence_reviewed",
+            "timeline",
+            "confirmed_facts",
+            "assumptions_and_unresolved_questions",
+            "root_cause_hypotheses_and_confidence",
+            "supporting_and_contradicting_evidence",
+            "investigation_actions",
+            "mitigation_and_recovery",
+            "biases_and_reasoning_risks",
+            "ai_limitations_and_unsupported_claims",
+            "lessons_learned",
+            "follow_up_actions",
+        )
+    )
+    assert "typed reportinput" in postmortem
+    assert "confirmed_by_human" in postmortem
 
 
 def test_application_code_does_not_load_prompt_files_outside_registry() -> None:
@@ -298,6 +349,7 @@ def test_application_code_does_not_load_prompt_files_outside_registry() -> None:
         "bias_v1.txt",
         "open_questions_v1.txt",
         "postmortem_v1.txt",
+        "postmortem_v2.txt",
         "app/prompts",
     )
 

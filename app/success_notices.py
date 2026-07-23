@@ -16,6 +16,8 @@ class SuccessNotice(StrEnum):
     EVIDENCE_FILES_UPLOADED = "evidence-files-uploaded"
     EVIDENCE_TYPE_UPDATED = "evidence-type-updated"
     ANALYSIS_REVIEW_UPDATED = "analysis-review-updated"
+    REPORT_DRAFT_READY = "report-draft-ready"
+    REPORT_DRAFT_UPDATED = "report-draft-updated"
 
 
 _SUCCESS_NOTICE_MESSAGES = {
@@ -25,6 +27,8 @@ _SUCCESS_NOTICE_MESSAGES = {
     SuccessNotice.EVIDENCE_FILES_UPLOADED: "Evidence files uploaded successfully.",
     SuccessNotice.EVIDENCE_TYPE_UPDATED: "Evidence type updated successfully.",
     SuccessNotice.ANALYSIS_REVIEW_UPDATED: "Human review saved successfully.",
+    SuccessNotice.REPORT_DRAFT_READY: "Postmortem draft is ready for review.",
+    SuccessNotice.REPORT_DRAFT_UPDATED: "Postmortem draft saved successfully.",
 }
 
 

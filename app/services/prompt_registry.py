@@ -141,6 +141,13 @@ _REGISTRATION_DEFINITIONS = (
         AnalysisStage.POSTMORTEM,
         PromptRole.TASK,
     ),
+    _RegistrationDefinition(
+        PromptName.POSTMORTEM,
+        PromptVersion.V2,
+        "postmortem_v2.txt",
+        AnalysisStage.POSTMORTEM,
+        PromptRole.TASK,
+    ),
 )
 
 

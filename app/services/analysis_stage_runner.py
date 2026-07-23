@@ -30,7 +30,7 @@ from app.schemas.ai_provider import (
     SafeAIMetadata,
 )
 from app.schemas.evidence import EvidenceManifest, EvidenceManifestSource
-from app.services.ai_provider import AIProvider
+from app.services.ai_provider import AIProvider, ai_result_matches_request
 from app.services.bias_service import BiasAnalysisError, BiasService
 from app.services.evidence_manifest_service import EvidenceManifestService
 from app.services.validation_service import ValidationService
@@ -315,24 +315,19 @@ class AnalysisStageRunner:
         analysis_run: AnalysisRun,
         output_type: type[StageOutputT],
     ) -> AIResult[StageOutputT]:
-        metadata = result.metadata
-        output = result.output
-        if (
-            not isinstance(output, output_type)
-            or metadata.analysis_stage is not request.metadata.analysis_stage
-            or metadata.output_schema is not request.output_schema
-            or metadata.system_prompt != request.prompts.system
-            or metadata.task_prompt != request.prompts.task
-            or metadata.request_identifier != request.metadata.request_identifier
-            or metadata.provider_name != analysis_run.provider_name
-            or metadata.model_name != analysis_run.model_name
+        if not ai_result_matches_request(
+            result,
+            request=request,
+            output_type=output_type,
+            provider_name=analysis_run.provider_name,
+            model_name=analysis_run.model_name,
         ):
             raise AnalysisStageOutputError(
                 "The AI provider returned an invalid analysis-stage output.",
                 raw_response=result.audit.raw_response,
             )
         return AIResult[StageOutputT](
-            output=output,
+            output=result.output,
             metadata=result.metadata,
             audit=result.audit,
         )

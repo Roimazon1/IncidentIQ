@@ -20,6 +20,7 @@ from app.models import (
 )
 from app.schemas.ai_outputs import (
     CriticOutputV1,
+    HypothesesOutputV1,
     OpenQuestionsOutputV1,
     ReasoningRisksOutputV1,
     SummaryOutputV1,
@@ -253,6 +254,17 @@ class AnalysisResultPersistence:
             raw_response,
             analysis_stage=AnalysisStage.TIMELINE,
             output_type=TimelineOutputV1,
+        )
+
+    @staticmethod
+    def extract_hypotheses_output(
+        raw_response: str | None,
+    ) -> HypothesesOutputV1 | None:
+        """Read only validated hypotheses from an internal audit envelope."""
+        return AnalysisResultPersistence._extract_stage_output(
+            raw_response,
+            analysis_stage=AnalysisStage.HYPOTHESES,
+            output_type=HypothesesOutputV1,
         )
 
     @staticmethod
