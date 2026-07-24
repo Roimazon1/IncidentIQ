@@ -19,6 +19,7 @@ from app.schemas.ai_outputs import (
     CriticOutputV1,
     HypothesisV1,
     HypothesesOutputV1,
+    OpenQuestionV1,
     OpenQuestionsOutputV1,
     PostmortemOutputV1,
     ReasoningRisksOutputV1,
@@ -37,6 +38,7 @@ from app.schemas.ai_provider import (
     PromptBundle,
     PromptReference,
     SuccessAuditData,
+    OpenQuestionSourceOptionV1,
 )
 from app.services.redaction_service import RedactionService
 
@@ -244,39 +246,87 @@ def select_output_model(request: AIRequest) -> type[AIOutput]:
 
 def build_model_facing_output_schema(
     output_model: type[AIOutput],
+    *,
+    open_question_sources: tuple[OpenQuestionSourceOptionV1, ...] = (),
 ) -> dict[str, object]:
     """Return a schema copy that excludes application-owned generated metadata."""
     schema = deepcopy(output_model.model_json_schema())
-    if output_model is not HypothesesOutputV1:
+    if output_model is HypothesesOutputV1:
+        definitions = schema.get("$defs")
+        if not isinstance(definitions, dict):
+            raise AIProviderConfigurationError(
+                "The hypotheses output schema is unavailable."
+            )
+        hypothesis_schema = definitions.get(HypothesisV1.__name__)
+        if not isinstance(hypothesis_schema, dict):
+            raise AIProviderConfigurationError(
+                "The hypothesis item schema is unavailable."
+            )
+        properties = hypothesis_schema.get("properties")
+        required = hypothesis_schema.get("required")
+        if not isinstance(properties, dict) or not isinstance(required, list):
+            raise AIProviderConfigurationError(
+                "The hypothesis metadata schema is unavailable."
+            )
+
+        hypothesis_schema["properties"] = {
+            key: value for key, value in properties.items() if key != "hypothesis_id"
+        }
+        hypothesis_schema["required"] = [
+            field_name for field_name in required if field_name != "hypothesis_id"
+        ]
         return schema
+
+    if output_model is not OpenQuestionsOutputV1:
+        return schema
+    if not open_question_sources:
+        raise AIProviderConfigurationError(
+            "The open-question source allowlist is unavailable."
+        )
 
     definitions = schema.get("$defs")
     if not isinstance(definitions, dict):
         raise AIProviderConfigurationError(
-            "The hypotheses output schema is unavailable."
+            "The open-question output schema is unavailable."
         )
-    hypothesis_schema = definitions.get(HypothesisV1.__name__)
-    if not isinstance(hypothesis_schema, dict):
-        raise AIProviderConfigurationError("The hypothesis item schema is unavailable.")
-    properties = hypothesis_schema.get("properties")
-    required = hypothesis_schema.get("required")
+    question_schema = definitions.get(OpenQuestionV1.__name__)
+    if not isinstance(question_schema, dict):
+        raise AIProviderConfigurationError(
+            "The open-question item schema is unavailable."
+        )
+    properties = question_schema.get("properties")
+    required = question_schema.get("required")
     if not isinstance(properties, dict) or not isinstance(required, list):
         raise AIProviderConfigurationError(
-            "The hypothesis metadata schema is unavailable."
+            "The open-question source schema is unavailable."
         )
 
-    hypothesis_schema["properties"] = {
-        key: value for key, value in properties.items() if key != "hypothesis_id"
+    question_schema["properties"] = {
+        **{
+            key: value
+            for key, value in properties.items()
+            if key not in {"source_kind", "source_reference"}
+        },
+        "source_id": {
+            "title": "Source Id",
+            "type": "string",
+            "enum": [source.source_id for source in open_question_sources],
+        },
     }
-    hypothesis_schema["required"] = [
-        field_name for field_name in required if field_name != "hypothesis_id"
+    question_schema["required"] = [
+        field_name
+        for field_name in required
+        if field_name not in {"source_kind", "source_reference"}
     ]
+    question_schema["required"].append("source_id")
     return schema
 
 
 def process_structured_response(
     raw_response: str | None,
     output_model: type[AIOutput],
+    *,
+    open_question_sources: tuple[OpenQuestionSourceOptionV1, ...] = (),
 ) -> StructuredResponseOutcome:
     """Extract, parse, and locally validate one provider response."""
     if raw_response is None or not isinstance(raw_response, str):
@@ -294,6 +344,11 @@ def process_structured_response(
     response_data = _assign_application_owned_hypothesis_ids(
         response_data,
         output_model,
+    )
+    response_data = _restore_application_owned_open_question_sources(
+        response_data,
+        output_model,
+        open_question_sources,
     )
     try:
         output = output_model.model_validate(response_data)
@@ -333,6 +388,65 @@ def _assign_application_owned_hypothesis_ids(
     return {
         **response_data,
         "hypotheses": normalized_hypotheses,
+    }
+
+
+def _restore_application_owned_open_question_sources(
+    response_data: object,
+    output_model: type[AIOutput],
+    source_options: tuple[OpenQuestionSourceOptionV1, ...],
+) -> object:
+    if (
+        output_model is not OpenQuestionsOutputV1
+        or not source_options
+        or not isinstance(response_data, dict)
+    ):
+        return response_data
+    questions = response_data.get("questions")
+    if not isinstance(questions, list):
+        return response_data
+
+    sources_by_id = {source.source_id: source for source in source_options}
+    sources_by_value = {
+        (source.source_kind.value, source.source_reference): source
+        for source in source_options
+    }
+    normalized_questions = []
+    for question in questions:
+        if not isinstance(question, dict):
+            normalized_questions.append(question)
+            continue
+
+        source = None
+        if "source_id" in question:
+            source_id = question["source_id"]
+            if isinstance(source_id, str):
+                source = sources_by_id.get(source_id)
+        else:
+            source_kind = question.get("source_kind")
+            source_reference = question.get("source_reference")
+            if isinstance(source_kind, str) and isinstance(source_reference, str):
+                source = sources_by_value.get(
+                    (
+                        source_kind,
+                        source_reference,
+                    )
+                )
+        if source is None:
+            normalized_questions.append(question)
+            continue
+
+        normalized_question = {
+            key: value
+            for key, value in question.items()
+            if key not in {"source_id", "source_kind", "source_reference"}
+        }
+        normalized_question["source_kind"] = source.source_kind.value
+        normalized_question["source_reference"] = source.source_reference
+        normalized_questions.append(normalized_question)
+    return {
+        **response_data,
+        "questions": normalized_questions,
     }
 
 

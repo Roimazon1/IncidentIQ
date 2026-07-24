@@ -25,6 +25,7 @@ from app.schemas.ai_outputs import (
     HypothesisValidationTestV1,
     HypothesesOutputV1,
     NonBlankText,
+    OpenQuestionSourceKind,
     ReasoningRisksOutputV1,
     PositiveRank,
     SummaryOutputV1,
@@ -44,6 +45,10 @@ SafeIdentifier = Annotated[
         max_length=128,
         pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$",
     ),
+]
+OpenQuestionSourceIdentifier = Annotated[
+    str,
+    StringConstraints(pattern=r"^S-\d{3}$"),
 ]
 
 
@@ -238,6 +243,14 @@ class OpenQuestionsContextV1(StrictAIContract):
 
     analysis_context: BiasContextV1
     reasoning_risks: ReasoningRisksOutputV1
+
+
+class OpenQuestionSourceOptionV1(StrictAIContract):
+    """Application-owned source option exposed to an open-question model."""
+
+    source_id: OpenQuestionSourceIdentifier
+    source_kind: OpenQuestionSourceKind
+    source_reference: NonBlankText
 
 
 class AIRequest(StrictAIContract):

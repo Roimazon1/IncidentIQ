@@ -45,6 +45,7 @@ from app.services.ai_provider import (
     AIProviderConfigurationError,
     AIProviderExecutionError,
 )
+from app.services.open_question_source_service import OpenQuestionSourceService
 from app.services.providers.gemini_provider import (
     GeminiClientProtocol,
     GeminiGenerateConfig,
@@ -535,9 +536,58 @@ def test_open_questions_payload_reuses_validated_reasoning_context() -> None:
         == "Database connection pool exhaustion"
     )
     assert context["reasoning_risks"]["risks"][0]["name"] == "Confirmation bias"
+    source_options = payload["open_question_sources"]
+    assert [source["source_id"] for source in source_options] == [
+        f"S-{index:03d}" for index in range(1, len(source_options) + 1)
+    ]
+    response_schema = client.recorded_models.calls[0]["config"]["response_json_schema"]
+    question_schema = response_schema["$defs"]["OpenQuestionV1"]
+    assert "source_id" in question_schema["properties"]
+    assert "source_kind" not in question_schema["properties"]
+    assert "source_reference" not in question_schema["properties"]
+    assert question_schema["properties"]["source_id"]["enum"] == [
+        source["source_id"] for source in source_options
+    ]
     assert "raw_response" not in payload_text
     assert "audit" not in payload_text
     assert "GEMINI_API_KEY" not in payload_text
+
+
+def test_open_question_source_identifier_maps_before_public_validation() -> None:
+    request = _open_questions_request()
+    assert request.open_questions_context is not None
+    source_options = OpenQuestionSourceService.build_source_options(
+        request.open_questions_context
+    )
+    selected_source = next(
+        source for source in source_options if source.source_reference == "H-002"
+    )
+    raw_response = json.dumps(
+        {
+            "questions": [
+                {
+                    "question": "What evidence would resolve the second hypothesis?",
+                    "source_id": selected_source.source_id,
+                    "rationale": "The hypothesis remains unresolved.",
+                    "evidence_needed": ["A discriminating controlled comparison"],
+                    "resolution_criteria": (
+                        "The comparison supports or weakens the hypothesis."
+                    ),
+                }
+            ]
+        }
+    )
+    client = _FakeClient([_FakeResponse(raw_response)])
+    provider = _provider(client)
+
+    result = provider.generate(request)
+
+    assert isinstance(result.output, OpenQuestionsOutputV1)
+    question = result.output.questions[0]
+    assert question.source_kind is selected_source.source_kind
+    assert question.source_reference == selected_source.source_reference
+    assert "source_id" not in result.output.model_dump_json()
+    assert result.audit.raw_response == raw_response
 
 
 def test_schema_sent_to_gemini_uses_only_supported_keywords() -> None:
