@@ -1,17 +1,16 @@
 """Provider-neutral execution boundary for Phase 6 analysis stages."""
 
 from hashlib import sha256
-from typing import TypeVar
+from typing import Protocol, TypeVar
 
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import AnalysisRun, ClaimSupportStatus, EvidenceItem
+from app.models import AnalysisRun, EvidenceItem, Incident
 from app.schemas.ai_outputs import (
     AIOutput,
     HypothesesOutputV1,
-    OpenQuestionSourceKind,
     OpenQuestionsOutputV1,
     ReasoningRisksOutputV1,
 )
@@ -33,10 +32,19 @@ from app.schemas.evidence import EvidenceManifest, EvidenceManifestSource
 from app.services.ai_provider import AIProvider, ai_result_matches_request
 from app.services.bias_service import BiasAnalysisError, BiasService
 from app.services.evidence_manifest_service import EvidenceManifestService
+from app.services.open_question_source_service import OpenQuestionSourceService
 from app.services.validation_service import ValidationService
 
 
 StageOutputT = TypeVar("StageOutputT", bound=BaseModel)
+
+
+class AnalysisStageContext(Protocol):
+    """Run identity required by the provider-neutral stage boundary."""
+
+    id: int
+    incident_id: int
+    incident: Incident
 
 
 class AnalysisEvidenceRequiredError(ValueError):
@@ -75,8 +83,12 @@ class AnalysisStageRunner:
     ) -> None:
         self._session = session
         self._ai_provider = ai_provider
+        self._evaluation_provider_identity: tuple[str, str] | None = None
 
-    def build_evidence_manifest(self, analysis_run: AnalysisRun) -> EvidenceManifest:
+    def build_evidence_manifest(
+        self,
+        analysis_run: AnalysisStageContext,
+    ) -> EvidenceManifest:
         """Build one provider-safe manifest from locally stored evidence."""
         evidence_items = tuple(
             self._session.scalars(
@@ -106,13 +118,14 @@ class AnalysisStageRunner:
 
     def execute_stage(
         self,
-        analysis_run: AnalysisRun,
+        analysis_run: AnalysisStageContext,
         evidence_manifest: EvidenceManifest,
         *,
         task_prompt: PromptName,
         analysis_stage: AnalysisStage,
         output_schema: OutputSchemaIdentifier,
         output_type: type[StageOutputT],
+        task_prompt_version: PromptVersion = PromptVersion.V1,
         critic_context: CriticContextV1 | None = None,
         bias_context: BiasContextV1 | None = None,
         open_questions_context: OpenQuestionsContextV1 | None = None,
@@ -131,6 +144,7 @@ class AnalysisStageRunner:
             analysis_run,
             evidence_manifest,
             task_prompt=task_prompt,
+            task_prompt_version=task_prompt_version,
             analysis_stage=analysis_stage,
             output_schema=output_schema,
             critic_context=critic_context,
@@ -190,42 +204,9 @@ class AnalysisStageRunner:
         raw_response: str | None = None,
     ) -> None:
         """Require every question to reference an unresolved typed analysis item."""
-        analysis = context.analysis_context
         allowed_sources = {
-            *(
-                (OpenQuestionSourceKind.UNRESOLVED_CLAIM, fact.claim)
-                for fact in analysis.validated_analysis.facts
-                if fact.support_status is not ClaimSupportStatus.SUPPORTED
-            ),
-            *(
-                (OpenQuestionSourceKind.UNRESOLVED_CLAIM, finding.affected_claim)
-                for finding in analysis.critic.findings
-            ),
-            *(
-                (OpenQuestionSourceKind.HYPOTHESIS, hypothesis.hypothesis_id)
-                for hypothesis in analysis.validated_analysis.hypotheses
-            ),
-            *(
-                (
-                    OpenQuestionSourceKind.CONTRADICTION,
-                    AnalysisStageRunner.build_contradiction_source_reference(
-                        hypothesis.hypothesis_id,
-                        evidence.reference.reference.evidence_id,
-                        evidence.reference.reference.line_range,
-                    ),
-                )
-                for hypothesis in analysis.validated_analysis.hypotheses
-                for evidence in hypothesis.contradicting_evidence
-            ),
-            *(
-                (OpenQuestionSourceKind.ASSUMPTION, assumption.claim)
-                for assumption in analysis.original_analysis.summary.assumptions
-            ),
-            *(
-                (OpenQuestionSourceKind.MISSING_EVIDENCE, missing_evidence)
-                for hypothesis in analysis.validated_analysis.hypotheses
-                for missing_evidence in hypothesis.missing_evidence
-            ),
+            (source.source_kind, source.source_reference)
+            for source in OpenQuestionSourceService.build_source_options(context)
         }
         if any(
             (question.source_kind, question.source_reference) not in allowed_sources
@@ -243,7 +224,11 @@ class AnalysisStageRunner:
         line_range: str,
     ) -> str:
         """Return the stable reference for one typed contradicting evidence item."""
-        return f"{hypothesis_id}|{evidence_id}|{line_range}"
+        return OpenQuestionSourceService.build_contradiction_source_reference(
+            hypothesis_id,
+            evidence_id,
+            line_range,
+        )
 
     def _require_ai_provider(self) -> AIProvider:
         if self._ai_provider is None:
@@ -307,24 +292,41 @@ class AnalysisStageRunner:
         except BiasAnalysisError as exc:
             raise AnalysisStageOutputError(str(exc)) from exc
 
-    @staticmethod
     def _validate_stage_result(
+        self,
         result: AIResult[AIOutput],
         *,
         request: AIRequest,
-        analysis_run: AnalysisRun,
+        analysis_run: AnalysisStageContext,
         output_type: type[StageOutputT],
     ) -> AIResult[StageOutputT]:
+        if isinstance(analysis_run, AnalysisRun):
+            provider_name = analysis_run.provider_name
+            model_name = analysis_run.model_name
+        elif self._evaluation_provider_identity is None:
+            provider_name = result.metadata.provider_name
+            model_name = result.metadata.model_name
+        else:
+            provider_name, model_name = self._evaluation_provider_identity
+
         if not ai_result_matches_request(
             result,
             request=request,
             output_type=output_type,
-            provider_name=analysis_run.provider_name,
-            model_name=analysis_run.model_name,
+            provider_name=provider_name,
+            model_name=model_name,
         ):
             raise AnalysisStageOutputError(
                 "The AI provider returned an invalid analysis-stage output.",
                 raw_response=result.audit.raw_response,
+            )
+        if (
+            not isinstance(analysis_run, AnalysisRun)
+            and self._evaluation_provider_identity is None
+        ):
+            self._evaluation_provider_identity = (
+                result.metadata.provider_name,
+                result.metadata.model_name,
             )
         return AIResult[StageOutputT](
             output=result.output,
@@ -334,10 +336,11 @@ class AnalysisStageRunner:
 
     @staticmethod
     def _build_stage_request(
-        analysis_run: AnalysisRun,
+        analysis_run: AnalysisStageContext,
         evidence_manifest: EvidenceManifest,
         *,
         task_prompt: PromptName,
+        task_prompt_version: PromptVersion = PromptVersion.V1,
         analysis_stage: AnalysisStage,
         output_schema: OutputSchemaIdentifier,
         critic_context: CriticContextV1 | None = None,
@@ -356,7 +359,7 @@ class AnalysisStageRunner:
                 ),
                 task=PromptReference(
                     name=task_prompt,
-                    version=PromptVersion.V1,
+                    version=task_prompt_version,
                 ),
             ),
             output_schema=output_schema,

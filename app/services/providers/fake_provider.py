@@ -30,6 +30,7 @@ from app.services.ai_provider import (
     resolve_request_prompts,
     select_output_model,
 )
+from app.services.open_question_source_service import OpenQuestionSourceService
 
 _SIMULATED_FAILURE_CATEGORIES = frozenset(
     {
@@ -179,12 +180,24 @@ class FakeAIProvider:
                 raw_response=raw_response,
             )
 
-        outcome = process_structured_response(raw_response, output_model)
+        open_question_sources = (
+            OpenQuestionSourceService.build_source_options(
+                request.open_questions_context
+            )
+            if request.open_questions_context is not None
+            else ()
+        )
+        outcome = process_structured_response(
+            raw_response,
+            output_model,
+            open_question_sources=open_question_sources,
+        )
         if outcome.failure_category is not None:
             raise_ai_provider_failure(
                 request=request,
                 category=outcome.failure_category,
                 attempt_count=1,
+                validation_errors=outcome.validation_errors,
                 raw_response=raw_response,
             )
 

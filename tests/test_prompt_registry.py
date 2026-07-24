@@ -44,8 +44,18 @@ EXPECTED_PROMPTS = {
         AnalysisStage.HYPOTHESES,
         PromptRole.TASK,
     ),
+    (PromptName.HYPOTHESES, PromptVersion.V2): (
+        "hypotheses_v2.txt",
+        AnalysisStage.HYPOTHESES,
+        PromptRole.TASK,
+    ),
     (PromptName.CRITIC, PromptVersion.V1): (
         "critic_v1.txt",
+        AnalysisStage.CRITIC,
+        PromptRole.TASK,
+    ),
+    (PromptName.CRITIC, PromptVersion.V2): (
+        "critic_v2.txt",
         AnalysisStage.CRITIC,
         PromptRole.TASK,
     ),
@@ -309,12 +319,14 @@ def test_stage_prompts_use_their_declared_uncertainty_fields() -> None:
     )
     assert "possible warning, not an accusation" in bias
     assert "evidence_needed" in open_questions
+    assert "source_id" in open_questions
+    assert "open_question_sources" in open_questions
     assert "source_kind" in open_questions
     assert "source_reference" in open_questions
     assert "not a confirmed fact" in open_questions
     assert "confirmed root cause" in open_questions
-    assert "hypothesis_id|evidence_id|line_range" in open_questions
-    assert "never use only the hypothesis id" in open_questions
+    assert "never invent, paraphrase, or construct" in open_questions
+    assert "never output a context path" in open_questions
     assert all(
         field in postmortem
         for field in (
@@ -339,13 +351,36 @@ def test_stage_prompts_use_their_declared_uncertainty_fields() -> None:
     assert "confirmed_by_human" in postmortem
 
 
+def test_evidence_reference_prompts_require_exact_or_omitted_excerpts() -> None:
+    registry = PromptRegistry()
+    evidence_reference_prompts = (
+        (PromptName.SUMMARY, PromptVersion.V1),
+        (PromptName.TIMELINE, PromptVersion.V1),
+        (PromptName.HYPOTHESES, PromptVersion.V1),
+        (PromptName.HYPOTHESES, PromptVersion.V2),
+        (PromptName.CRITIC, PromptVersion.V1),
+        (PromptName.CRITIC, PromptVersion.V2),
+    )
+
+    for prompt_name, prompt_version in evidence_reference_prompts:
+        content = registry.resolve_content(
+            PromptReference(name=prompt_name, version=prompt_version)
+        ).lower()
+        assert "exact evidence_id and line_range" in content
+        assert "set excerpt to null" in content
+        assert "exact verbatim excerpt" in content
+        assert "never put a paraphrase or summary in excerpt" in content
+
+
 def test_application_code_does_not_load_prompt_files_outside_registry() -> None:
     forbidden_terms = (
         "system_v1.txt",
         "summary_v1.txt",
         "timeline_v1.txt",
         "hypotheses_v1.txt",
+        "hypotheses_v2.txt",
         "critic_v1.txt",
+        "critic_v2.txt",
         "bias_v1.txt",
         "open_questions_v1.txt",
         "postmortem_v1.txt",

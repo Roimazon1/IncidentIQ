@@ -192,6 +192,8 @@ def test_critic_challenges_top_hypothesis_without_mutating_original_results(
         persisted_run = session.scalar(
             select(AnalysisRun)
             .options(
+                selectinload(AnalysisRun.facts),
+                selectinload(AnalysisRun.timeline_events),
                 selectinload(AnalysisRun.hypotheses),
                 selectinload(AnalysisRun.bias_flags),
             )
@@ -200,6 +202,8 @@ def test_critic_challenges_top_hypothesis_without_mutating_original_results(
 
         assert persisted_run is not None
         assert persisted_run.status is AnalysisRunStatus.COMPLETED
+        assert len(persisted_run.facts) == 1
+        assert len(persisted_run.timeline_events) == 2
         assert [
             (hypothesis.rank, hypothesis.title, hypothesis.confidence)
             for hypothesis in persisted_run.hypotheses

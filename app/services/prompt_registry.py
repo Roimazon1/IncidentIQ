@@ -114,9 +114,23 @@ _REGISTRATION_DEFINITIONS = (
         PromptRole.TASK,
     ),
     _RegistrationDefinition(
+        PromptName.HYPOTHESES,
+        PromptVersion.V2,
+        "hypotheses_v2.txt",
+        AnalysisStage.HYPOTHESES,
+        PromptRole.TASK,
+    ),
+    _RegistrationDefinition(
         PromptName.CRITIC,
         PromptVersion.V1,
         "critic_v1.txt",
+        AnalysisStage.CRITIC,
+        PromptRole.TASK,
+    ),
+    _RegistrationDefinition(
+        PromptName.CRITIC,
+        PromptVersion.V2,
+        "critic_v2.txt",
         AnalysisStage.CRITIC,
         PromptRole.TASK,
     ),

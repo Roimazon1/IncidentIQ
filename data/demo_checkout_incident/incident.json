@@ -1,0 +1,26 @@
+{
+  "dataset_version": "1.0",
+  "synthetic": true,
+  "name": "Checkout failures after v2.4.1 deployment",
+  "description": "A synthetic investigation into elevated checkout failures, delayed requests, and intermittent payment timeouts after release v2.4.1. The evidence intentionally contains uncertainty, contradictions, and an unrelated warning.",
+  "affected_service": "checkout-api",
+  "reported_start_time": "2025-02-18T10:05:00Z",
+  "evidence": [
+    {
+      "source_name": "deployment-v2.4.1.md",
+      "evidence_type": "DEPLOYMENT_NOTE"
+    },
+    {
+      "source_name": "checkout.log",
+      "evidence_type": "APPLICATION_LOG"
+    },
+    {
+      "source_name": "monitoring.csv",
+      "evidence_type": "MONITORING_ALERT"
+    },
+    {
+      "source_name": "support-message.txt",
+      "evidence_type": "USER_COMPLAINT"
+    }
+  ]
+}

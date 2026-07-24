@@ -50,16 +50,24 @@ class IncidentService:
     def __init__(self, session: Session) -> None:
         self.session = session
 
-    def create_incident(self, incident_data: IncidentCreate) -> Incident:
-        """Persist a new draft incident with the next deterministic public ID."""
+    def create_incident(
+        self,
+        incident_data: IncidentCreate,
+        *,
+        commit: bool = True,
+    ) -> Incident:
+        """Create an incident with an optional caller-managed transaction."""
         incident = Incident(
             public_id=self._next_public_id(),
             **incident_data.model_dump(),
         )
         self.session.add(incident)
         try:
-            self.session.commit()
-            self.session.refresh(incident)
+            if commit:
+                self.session.commit()
+                self.session.refresh(incident)
+            else:
+                self.session.flush()
         except SQLAlchemyError as exc:
             self.session.rollback()
             raise IncidentPersistenceError(

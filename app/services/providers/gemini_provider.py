@@ -24,11 +24,13 @@ from app.services.ai_provider import (
     PromptBundleValidator,
     PromptResolver,
     build_ai_result,
+    build_model_facing_output_schema,
     process_structured_response,
     raise_ai_provider_failure,
     resolve_request_prompts,
     select_output_model,
 )
+from app.services.open_question_source_service import OpenQuestionSourceService
 
 if TYPE_CHECKING:
     # noinspection PyPackageRequirements
@@ -251,6 +253,13 @@ class GeminiAIProvider:
     def generate(self, request: AIRequest) -> AIResult[AIOutput]:
         """Call Gemini with redacted data and return only locally validated output."""
         output_model = select_output_model(request)
+        open_question_sources = (
+            OpenQuestionSourceService.build_source_options(
+                request.open_questions_context
+            )
+            if request.open_questions_context is not None
+            else ()
+        )
         system_prompt, task_prompt = resolve_request_prompts(
             request,
             prompt_resolver=self._prompt_resolver,
@@ -261,7 +270,10 @@ class GeminiAIProvider:
             "system_instruction": system_prompt,
             "response_mime_type": "application/json",
             "response_json_schema": _gemini_supported_schema(
-                output_model.model_json_schema()
+                build_model_facing_output_schema(
+                    output_model,
+                    open_question_sources=open_question_sources,
+                )
             ),
         }
 
@@ -313,6 +325,7 @@ class GeminiAIProvider:
             outcome = process_structured_response(
                 raw_response,
                 output_model,
+                open_question_sources=open_question_sources,
             )
             if outcome.failure_category is not None:
                 if self._retry_policy.has_next_attempt(attempt_count):
@@ -320,8 +333,10 @@ class GeminiAIProvider:
                     continue
                 raise_ai_provider_failure(
                     request=request,
-                    category=AIFailureCategory.EXHAUSTED_RETRIES,
+                    category=outcome.failure_category,
                     attempt_count=attempt_count,
+                    retries_exhausted=True,
+                    validation_errors=outcome.validation_errors,
                     raw_response=raw_response,
                 )
 
@@ -404,6 +419,12 @@ class GeminiAIProvider:
             payload["open_questions_context"] = (
                 request.open_questions_context.model_dump(mode="json")
             )
+            payload["open_question_sources"] = [
+                source.model_dump(mode="json")
+                for source in OpenQuestionSourceService.build_source_options(
+                    request.open_questions_context
+                )
+            ]
         return json.dumps(payload, separators=(",", ":"), sort_keys=True)
 
     @staticmethod
@@ -439,11 +460,11 @@ class GeminiAIProvider:
         if retryable and self._retry_policy.has_next_attempt(attempt_count):
             self._sleep_before_retry(attempt_count)
             return
-        final_category = AIFailureCategory.EXHAUSTED_RETRIES if retryable else category
         raise_ai_provider_failure(
             request=request,
-            category=final_category,
+            category=category,
             attempt_count=attempt_count,
+            retries_exhausted=retryable,
         )
 
     def _sleep_before_retry(self, attempt_count: int) -> None:

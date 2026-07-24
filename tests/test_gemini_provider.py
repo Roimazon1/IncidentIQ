@@ -45,6 +45,7 @@ from app.services.ai_provider import (
     AIProviderConfigurationError,
     AIProviderExecutionError,
 )
+from app.services.open_question_source_service import OpenQuestionSourceService
 from app.services.providers.gemini_provider import (
     GeminiClientProtocol,
     GeminiGenerateConfig,
@@ -58,6 +59,7 @@ from app.services.validation_service import ValidationService
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "fake_ai_responses.json"
 SYSTEM_PROMPT = "Use only the supplied redacted evidence."
 TASK_PROMPT = "Produce a neutral summary with cited facts and explicit uncertainty."
+HYPOTHESES_PROMPT = "Produce ranked hypotheses with strict semantic fields."
 CRITIC_PROMPT = "Challenge the supplied validated initial analysis."
 BIAS_PROMPT = "Assess possible reasoning risks in the validated analysis."
 OPEN_QUESTIONS_PROMPT = "Identify actionable unresolved investigation questions."
@@ -152,6 +154,8 @@ def _resolve_prompt(reference: PromptReference) -> str:
         return SYSTEM_PROMPT
     if reference.name is PromptName.SUMMARY:
         return TASK_PROMPT
+    if reference.name is PromptName.HYPOTHESES:
+        return HYPOTHESES_PROMPT
     if reference.name is PromptName.CRITIC:
         return CRITIC_PROMPT
     if reference.name is PromptName.BIAS:
@@ -167,6 +171,7 @@ def _validate_prompt_bundle(
 ) -> None:
     expected_task = {
         AnalysisStage.SUMMARY: PromptName.SUMMARY,
+        AnalysisStage.HYPOTHESES: PromptName.HYPOTHESES,
         AnalysisStage.CRITIC: PromptName.CRITIC,
         AnalysisStage.BIAS: PromptName.BIAS,
         AnalysisStage.OPEN_QUESTIONS: PromptName.OPEN_QUESTIONS,
@@ -175,7 +180,14 @@ def _validate_prompt_bundle(
         bundle.system.name is not PromptName.SYSTEM
         or bundle.system.version is not PromptVersion.V1
         or bundle.task.name is not expected_task
-        or bundle.task.version is not PromptVersion.V1
+        or (
+            analysis_stage is not AnalysisStage.HYPOTHESES
+            and bundle.task.version is not PromptVersion.V1
+        )
+        or (
+            analysis_stage is AnalysisStage.HYPOTHESES
+            and bundle.task.version not in {PromptVersion.V1, PromptVersion.V2}
+        )
     ):
         raise LookupError("unregistered prompt bundle")
 
@@ -225,6 +237,28 @@ def _summary_request() -> AIRequest:
             analysis_stage=AnalysisStage.SUMMARY,
             evidence_manifest_checksum="a" * 64,
         ),
+    )
+
+
+def _hypotheses_request(prompt_version: PromptVersion) -> AIRequest:
+    summary_request = _summary_request()
+    return summary_request.model_copy(
+        update={
+            "prompts": PromptBundle(
+                system=summary_request.prompts.system,
+                task=PromptReference(
+                    name=PromptName.HYPOTHESES,
+                    version=prompt_version,
+                ),
+            ),
+            "output_schema": OutputSchemaIdentifier.HYPOTHESES_V1,
+            "metadata": summary_request.metadata.model_copy(
+                update={
+                    "request_identifier": (f"req-hypotheses-{prompt_version.value}"),
+                    "analysis_stage": AnalysisStage.HYPOTHESES,
+                }
+            ),
+        }
     )
 
 
@@ -410,6 +444,31 @@ def test_injected_client_receives_redacted_structured_request_only() -> None:
     assert "properties" in response_schema
 
 
+@pytest.mark.parametrize("prompt_version", [PromptVersion.V1, PromptVersion.V2])
+def test_gemini_hypothesis_ids_are_application_owned_for_every_prompt_version(
+    prompt_version: PromptVersion,
+) -> None:
+    response_data = json.loads(_fixture_response("valid_hypotheses"))
+    for index, hypothesis in enumerate(response_data["hypotheses"], start=1):
+        hypothesis["hypothesis_id"] = f"H{index}"
+    client = _FakeClient([_FakeResponse(json.dumps(response_data))])
+    provider = _provider(client)
+
+    result = provider.generate(_hypotheses_request(prompt_version))
+
+    assert isinstance(result.output, HypothesesOutputV1)
+    assert [hypothesis.hypothesis_id for hypothesis in result.output.hypotheses] == [
+        "H-001",
+        "H-002",
+        "H-003",
+    ]
+    assert result.audit.raw_response == json.dumps(response_data)
+    response_schema = client.recorded_models.calls[0]["config"]["response_json_schema"]
+    hypothesis_schema = response_schema["$defs"]["HypothesisV1"]
+    assert "hypothesis_id" not in hypothesis_schema["properties"]
+    assert "hypothesis_id" not in hypothesis_schema["required"]
+
+
 def test_critic_payload_contains_validated_initial_analysis_without_audit() -> None:
     client = _FakeClient([_FakeResponse(_fixture_response("valid_critic"))])
     provider = _provider(client)
@@ -477,9 +536,58 @@ def test_open_questions_payload_reuses_validated_reasoning_context() -> None:
         == "Database connection pool exhaustion"
     )
     assert context["reasoning_risks"]["risks"][0]["name"] == "Confirmation bias"
+    source_options = payload["open_question_sources"]
+    assert [source["source_id"] for source in source_options] == [
+        f"S-{index:03d}" for index in range(1, len(source_options) + 1)
+    ]
+    response_schema = client.recorded_models.calls[0]["config"]["response_json_schema"]
+    question_schema = response_schema["$defs"]["OpenQuestionV1"]
+    assert "source_id" in question_schema["properties"]
+    assert "source_kind" not in question_schema["properties"]
+    assert "source_reference" not in question_schema["properties"]
+    assert question_schema["properties"]["source_id"]["enum"] == [
+        source["source_id"] for source in source_options
+    ]
     assert "raw_response" not in payload_text
     assert "audit" not in payload_text
     assert "GEMINI_API_KEY" not in payload_text
+
+
+def test_open_question_source_identifier_maps_before_public_validation() -> None:
+    request = _open_questions_request()
+    assert request.open_questions_context is not None
+    source_options = OpenQuestionSourceService.build_source_options(
+        request.open_questions_context
+    )
+    selected_source = next(
+        source for source in source_options if source.source_reference == "H-002"
+    )
+    raw_response = json.dumps(
+        {
+            "questions": [
+                {
+                    "question": "What evidence would resolve the second hypothesis?",
+                    "source_id": selected_source.source_id,
+                    "rationale": "The hypothesis remains unresolved.",
+                    "evidence_needed": ["A discriminating controlled comparison"],
+                    "resolution_criteria": (
+                        "The comparison supports or weakens the hypothesis."
+                    ),
+                }
+            ]
+        }
+    )
+    client = _FakeClient([_FakeResponse(raw_response)])
+    provider = _provider(client)
+
+    result = provider.generate(request)
+
+    assert isinstance(result.output, OpenQuestionsOutputV1)
+    question = result.output.questions[0]
+    assert question.source_kind is selected_source.source_kind
+    assert question.source_reference == selected_source.source_reference
+    assert "source_id" not in result.output.model_dump_json()
+    assert result.audit.raw_response == raw_response
 
 
 def test_schema_sent_to_gemini_uses_only_supported_keywords() -> None:
@@ -538,11 +646,19 @@ def test_schema_validation_failures_exhaust_retries_safely(
     public_failure = f"{error!s}\n{error!r}\n{error.details.model_dump_json()}"
     assert len(client.recorded_models.calls) == 2
     assert delays == [0.5]
-    assert error.details.category is AIFailureCategory.EXHAUSTED_RETRIES
+    assert error.details.category is AIFailureCategory.SCHEMA_VALIDATION
     assert error.details.audit is not None
     assert error.details.audit.attempt_count == 2
+    assert error.retries_exhausted is True
     assert error.details.audit.raw_response == raw_response
+    assert error.validation_errors
+    assert all(error_detail.loc for error_detail in error.validation_errors)
+    assert all(error_detail.type for error_detail in error.validation_errors)
+    assert all(error_detail.message for error_detail in error.validation_errors)
     assert "audit" not in error.details.model_dump()
+    assert "validation_errors" not in error.details.model_dump()
+    assert "validation_errors" not in error.details.model_dump_json()
+    assert "validation_errors" not in public_failure
     assert raw_response not in public_failure
     assert raw_response not in caplog.text
 
@@ -578,9 +694,10 @@ def test_rate_limit_exhaustion_is_bounded_and_secret_safe(
     error = error_info.value
     assert len(client.recorded_models.calls) == 2
     assert delays == [0.5]
-    assert error.details.category is AIFailureCategory.EXHAUSTED_RETRIES
+    assert error.details.category is AIFailureCategory.RATE_LIMIT
     assert error.details.audit is not None
     assert error.details.audit.attempt_count == 2
+    assert error.retries_exhausted is True
     assert secret not in str(error)
     assert secret not in repr(error)
     assert secret not in caplog.text
@@ -598,6 +715,8 @@ def test_authentication_failure_is_not_retried() -> None:
     error = error_info.value
     assert len(client.recorded_models.calls) == 1
     assert error.details.category is AIFailureCategory.AUTHENTICATION
+    assert error.details.audit is not None
+    assert error.retries_exhausted is False
     assert secret not in str(error)
     assert secret not in repr(error)
 
@@ -683,6 +802,61 @@ def test_gemini_server_error_retries_and_then_succeeds() -> None:
     assert delays == [0.5]
 
 
+def test_timeout_exhaustion_preserves_underlying_category(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    client = _FakeClient(
+        [
+            TimeoutError("sensitive timeout details"),
+            TimeoutError("sensitive timeout details"),
+        ]
+    )
+    delays: list[float] = []
+    provider = _provider(client, max_attempts=2, sleeper=delays.append)
+
+    with pytest.raises(AIProviderExecutionError) as error_info:
+        provider.generate(_summary_request())
+
+    error = error_info.value
+    assert len(client.recorded_models.calls) == 2
+    assert delays == [0.5]
+    assert error.details.category is AIFailureCategory.TIMEOUT
+    assert error.details.audit is not None
+    assert error.details.audit.attempt_count == 2
+    assert error.retries_exhausted is True
+    assert "sensitive timeout details" not in str(error)
+    assert "sensitive timeout details" not in repr(error)
+    assert "sensitive timeout details" not in caplog.text
+
+
+def test_server_error_exhaustion_preserves_underlying_category(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    secret = "sensitive server details"
+    client = _FakeClient(
+        [
+            _FakeGeminiError(503, secret),
+            _FakeGeminiError(503, secret),
+        ]
+    )
+    delays: list[float] = []
+    provider = _provider(client, max_attempts=2, sleeper=delays.append)
+
+    with pytest.raises(AIProviderExecutionError) as error_info:
+        provider.generate(_summary_request())
+
+    error = error_info.value
+    assert len(client.recorded_models.calls) == 2
+    assert delays == [0.5]
+    assert error.details.category is AIFailureCategory.TRANSIENT_PROVIDER_FAILURE
+    assert error.details.audit is not None
+    assert error.details.audit.attempt_count == 2
+    assert error.retries_exhausted is True
+    assert secret not in str(error)
+    assert secret not in repr(error)
+    assert secret not in caplog.text
+
+
 def test_unknown_provider_exception_fails_once_without_exposing_details(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -721,8 +895,10 @@ def test_malformed_response_exhaustion_retains_internal_raw_audit(
         provider.generate(_summary_request())
 
     error = error_info.value
-    assert error.details.category is AIFailureCategory.EXHAUSTED_RETRIES
+    assert error.details.category is AIFailureCategory.MALFORMED_JSON
     assert error.details.audit is not None
+    assert error.details.audit.attempt_count == 2
+    assert error.retries_exhausted is True
     assert error.details.audit.raw_response == latest_raw_response
     assert latest_raw_response not in str(error)
     assert latest_raw_response not in repr(error)

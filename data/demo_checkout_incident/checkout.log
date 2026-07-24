@@ -1,0 +1,41 @@
+2025-02-18T09:54:30.112Z INFO  service=checkout-api version=v2.4.0 event=db_pool_initialized max=40 min=8 acquire_timeout_ms=2000
+2025-02-18T09:54:45.008Z INFO  service=checkout-api version=v2.4.0 event=checkout_completed request_id=SYN-BASE-001 duration_ms=418 payment_result=approved
+2025-02-18T10:02:11.441Z INFO  service=checkout-api version=v2.4.1 pod=checkout-canary-1 event=db_pool_initialized max=4 min=4 acquire_timeout_ms=2000
+2025-02-18T10:02:13.029Z INFO  service=checkout-api version=v2.4.1 pod=checkout-canary-1 event=ready_check result=pass
+2025-02-18T10:04:58.554Z WARN  service=checkout-api pod=checkout-canary-1 event=db_pool_pressure active=4 idle=0 waiters=2 max=4
+2025-02-18T10:05:06.773Z ERROR service=checkout-api request_id=SYN-REQ-1001 stage=order_create error=db_acquire_timeout wait_ms=2000 http_status=503
+2025-02-18T10:05:06.778Z ERROR service=checkout-api request_id=SYN-REQ-1001 event=checkout_request_failed error=internal_checkout_error http_status=500
+2025-02-18T10:05:08.116Z INFO  service=checkout-api request_id=SYN-REQ-1002 stage=payment_authorize payment_result=approved duration_ms=284
+2025-02-18T10:06:22.902Z INFO  service=checkout-api version=v2.4.1 pod=checkout-prod-3 event=db_pool_initialized max=4 min=4 acquire_timeout_ms=2000
+2025-02-18T10:07:41.330Z WARN  service=checkout-api pod=checkout-prod-3 event=db_pool_pressure active=4 idle=0 waiters=11 max=4
+2025-02-18T10:07:43.391Z ERROR service=checkout-api request_id=SYN-REQ-1014 stage=cart_load error=db_acquire_timeout wait_ms=2000 http_status=503
+2025-02-18T10:08:02.775Z INFO  service=checkout-api request_id=SYN-REQ-1017 stage=payment_authorize payment_result=approved duration_ms=301
+2025-02-18T10:09:14.087Z WARN  service=checkout-api event=payment_retry_scheduled request_id=SYN-REQ-1022 attempt=2 backoff_ms=500 reason=upstream_timeout
+2025-02-18T10:09:14.590Z INFO  service=checkout-api event=payment_authorize request_id=SYN-REQ-1022 payment_result=approved duration_ms=496 attempt=2
+2025-02-18T10:10:03.147Z WARN  service=checkout-api component=shipping-zone-cache event=refresh_delayed lag_seconds=91 fallback=enabled
+2025-02-18T10:10:04.001Z INFO  service=checkout-api component=shipping-zone-cache event=fallback_served request_id=SYN-REQ-1029 result=success
+2025-02-18T10:11:37.218Z WARN  service=checkout-api pod=checkout-prod-3 event=db_pool_pressure active=4 idle=0 waiters=31 max=4
+2025-02-18T10:11:39.229Z ERROR service=checkout-api request_id=SYN-REQ-1038 stage=inventory_reserve error=db_acquire_timeout wait_ms=2000 http_status=503
+2025-02-18T10:12:05.943Z ERROR service=checkout-api request_id=SYN-REQ-1041 stage=order_create error=db_acquire_timeout wait_ms=2000 http_status=503
+2025-02-18T10:12:05.949Z ERROR service=checkout-api request_id=SYN-REQ-1041 event=checkout_request_failed error=internal_checkout_error http_status=500
+2025-02-18T10:13:55.411Z WARN  service=checkout-api request_id=SYN-REQ-1049 event=request_deadline_low remaining_ms=2410 queued_ms=1855
+2025-02-18T10:13:57.920Z ERROR service=checkout-api request_id=SYN-REQ-1049 stage=payment_authorize error=upstream_timeout elapsed_ms=2500 http_status=504
+2025-02-18T10:14:02.613Z INFO  service=checkout-api request_id=SYN-REQ-1050 stage=payment_authorize payment_result=approved duration_ms=322
+2025-02-18T10:14:08.772Z ERROR service=checkout-api request_id=SYN-REQ-1050 stage=order_create error=db_acquire_timeout wait_ms=2000 http_status=503
+2025-02-18T10:15:44.099Z WARN  service=checkout-api event=payment_retry_queue depth=18 oldest_wait_ms=1940
+2025-02-18T10:16:17.301Z ERROR service=checkout-api request_id=SYN-REQ-1062 stage=payment_authorize error=upstream_timeout elapsed_ms=2500 http_status=504
+2025-02-18T10:16:19.010Z WARN  service=checkout-api pod=checkout-prod-3 event=db_pool_pressure active=4 idle=0 waiters=55 max=4
+2025-02-18T10:17:02.445Z ERROR service=checkout-api request_id=SYN-REQ-1066 event=checkout_request_failed error=internal_checkout_error http_status=500
+2025-02-18T10:18:32.881Z INFO  service=checkout-api event=runtime_config_observed pod=checkout-prod-3 db_pool_max=4 config_source=shared-template override_status=unverified
+2025-02-18T10:19:11.280Z INFO  service=checkout-api request_id=SYN-REQ-1073 stage=payment_authorize payment_result=approved duration_ms=310
+2025-02-18T10:19:13.294Z ERROR service=checkout-api request_id=SYN-REQ-1073 stage=order_create error=db_acquire_timeout wait_ms=2000 http_status=503
+2025-02-18T10:22:45.621Z WARN  service=checkout-api event=retry_amplification active_requests=86 retrying_requests=21
+2025-02-18T10:26:12.040Z INFO  service=checkout-api event=image_rollback from=v2.4.1 to=v2.4.0 runtime_config_changed=false
+2025-02-18T10:28:16.502Z WARN  service=checkout-api version=v2.4.0 event=db_pool_pressure active=4 idle=0 waiters=46 max=4
+2025-02-18T10:28:18.519Z ERROR service=checkout-api version=v2.4.0 request_id=SYN-REQ-1108 stage=order_create error=db_acquire_timeout wait_ms=2000 http_status=503
+2025-02-18T10:28:18.525Z ERROR service=checkout-api version=v2.4.0 request_id=SYN-REQ-1108 event=checkout_request_failed error=internal_checkout_error http_status=500
+2025-02-18T10:33:40.155Z INFO  service=checkout-api event=runtime_config_refresh_applied revision=cfg-synth-18
+2025-02-18T10:34:02.703Z INFO  service=checkout-api event=db_pool_resized previous_max=4 max=40 active=4 idle=36 waiters=0
+2025-02-18T10:34:15.998Z INFO  service=checkout-api request_id=SYN-REQ-1131 event=checkout_completed duration_ms=487 payment_result=approved
+2025-02-18T10:36:05.445Z INFO  service=checkout-api component=shipping-zone-cache event=refresh_delayed lag_seconds=88 fallback=enabled
+2025-02-18T10:36:08.217Z INFO  service=checkout-api component=shipping-zone-cache event=fallback_served request_id=SYN-REQ-1140 result=success

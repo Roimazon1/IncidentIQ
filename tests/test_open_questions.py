@@ -17,6 +17,7 @@ from app.schemas.ai_outputs import (
     TimelineOutputV1,
 )
 from app.schemas.ai_provider import (
+    AIFailureCategory,
     BiasContextV1,
     CriticContextV1,
     OpenQuestionsContextV1,
@@ -26,7 +27,9 @@ from app.services.analysis_stage_runner import (
     AnalysisStageOutputError,
     AnalysisStageRunner,
 )
+from app.services.ai_provider import process_structured_response
 from app.services.evidence_manifest_service import EvidenceManifestService
+from app.services.open_question_source_service import OpenQuestionSourceService
 from app.services.validation_service import ValidationService
 
 
@@ -127,6 +130,137 @@ def test_real_contradictions_have_distinct_accepted_source_references() -> None:
 
     assert source_references == ("H-001|E-001|1", "H-001|E-001|2")
     assert len(set(source_references)) == 2
+
+
+def test_stable_source_identifier_maps_to_exact_typed_source() -> None:
+    context = _open_questions_context()
+    source_options = OpenQuestionSourceService.build_source_options(context)
+    selected_source = next(
+        source
+        for source in source_options
+        if source.source_kind is OpenQuestionSourceKind.ASSUMPTION
+    )
+    raw_response = json.dumps(
+        {
+            "questions": [
+                {
+                    "question": "Did the possible deployment relationship occur?",
+                    "source_id": selected_source.source_id,
+                    "rationale": "The relationship remains an assumption.",
+                    "evidence_needed": ["Deployment history"],
+                    "resolution_criteria": (
+                        "The deployment record establishes or rules out the "
+                        "relationship."
+                    ),
+                }
+            ]
+        }
+    )
+
+    outcome = process_structured_response(
+        raw_response,
+        OpenQuestionsOutputV1,
+        open_question_sources=source_options,
+    )
+
+    assert isinstance(outcome.output, OpenQuestionsOutputV1)
+    question = outcome.output.questions[0]
+    assert question.source_kind is selected_source.source_kind
+    assert question.source_reference == selected_source.source_reference
+    assert "source_id" not in outcome.output.model_dump_json()
+    assert [source.source_id for source in source_options] == [
+        f"S-{index:03d}" for index in range(1, len(source_options) + 1)
+    ]
+    AnalysisStageRunner.require_traceable_open_questions(outcome.output, context)
+
+
+def test_invented_source_identifier_fails_before_public_validation() -> None:
+    context = _open_questions_context()
+    raw_response = json.dumps(
+        {
+            "questions": [
+                {
+                    "question": "What invented source should be investigated?",
+                    "source_id": "S-999",
+                    "rationale": "This source is not in the allowlist.",
+                    "evidence_needed": ["A real traceable source"],
+                    "resolution_criteria": "A valid source is selected.",
+                }
+            ]
+        }
+    )
+
+    outcome = process_structured_response(
+        raw_response,
+        OpenQuestionsOutputV1,
+        open_question_sources=OpenQuestionSourceService.build_source_options(context),
+    )
+
+    assert outcome.output is None
+    assert outcome.failure_category is AIFailureCategory.SCHEMA_VALIDATION
+    assert raw_response not in repr(outcome)
+
+
+@pytest.mark.parametrize(
+    "source_fields",
+    (
+        {"source_id": []},
+        {"source_id": {}},
+        {
+            "source_kind": OpenQuestionSourceKind.ASSUMPTION.value,
+            "source_reference": [],
+        },
+    ),
+    ids=("list-source-id", "object-source-id", "unhashable-legacy-reference"),
+)
+def test_malformed_source_values_fail_schema_validation_safely(
+    source_fields: dict[str, object],
+) -> None:
+    context = _open_questions_context()
+    response_data = {
+        "questions": [
+            {
+                "question": "What malformed source should be investigated?",
+                **source_fields,
+                "rationale": "This malformed source must fail closed.",
+                "evidence_needed": ["A valid traceable source"],
+                "resolution_criteria": "A valid source is selected.",
+            }
+        ]
+    }
+    raw_response = json.dumps(response_data)
+
+    outcome = process_structured_response(
+        raw_response,
+        OpenQuestionsOutputV1,
+        open_question_sources=OpenQuestionSourceService.build_source_options(context),
+    )
+
+    assert outcome.output is None
+    assert outcome.failure_category is AIFailureCategory.SCHEMA_VALIDATION
+    assert raw_response not in repr(outcome)
+
+
+def test_paraphrased_assumption_source_is_rejected_safely() -> None:
+    context = _open_questions_context()
+    output = OpenQuestionsOutputV1(
+        questions=(
+            OpenQuestionV1(
+                question="Was a deployment related?",
+                source_kind=OpenQuestionSourceKind.ASSUMPTION,
+                source_reference="A deployment might be related.",
+                rationale="The relationship remains unverified.",
+                evidence_needed=("Deployment history",),
+                resolution_criteria="The history confirms or rules out a relationship.",
+            ),
+        )
+    )
+
+    with pytest.raises(
+        AnalysisStageOutputError,
+        match="untraceable analysis source",
+    ):
+        AnalysisStageRunner.require_traceable_open_questions(output, context)
 
 
 @pytest.mark.parametrize(
