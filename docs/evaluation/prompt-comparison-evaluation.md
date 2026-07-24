@@ -43,11 +43,15 @@ did not match the cited line ranges in the normalized redacted evidence:
   evidence.** The claimed rollback and continuing pool-pressure quotation
   failed validation. Validation result: `excerpt_mismatch`.
 
-These are inaccurate quotations: the model supplied text that did not match
-the cited location. They must therefore not count as effective evidence for or
-against a hypothesis. An `excerpt_mismatch` does **not**, by itself, establish a
-fully hallucinated fact. The comparison did not prove that an entire hypothesis
-or incident fact was invented; H-001 also had other references that passed
+These are inaccurate quotations: the optional excerpts did not exactly match
+the cited normalized redacted lines. The evidence ID and line range are
+validated separately, and each reference is retained with a visible
+`excerpt_mismatch` status for human review. IncidentIQ does not rewrite or
+fuzzy-match the paraphrase, and it does not validate it as verbatim evidence.
+Reviewers therefore must not treat the supplied excerpt as a verified
+quotation. An `excerpt_mismatch` does **not**, by itself, establish a fully
+hallucinated fact. The comparison did not prove that an entire hypothesis or
+incident fact was invented; H-001 also had other references that passed
 validation. The safe conclusion is limited to the observed defect: those
 specific quotations were unsupported by their cited ranges.
 
@@ -120,9 +124,9 @@ proven.
      `excerpt_mismatch`; the leading H-001 result had another mismatch.
    - Risk: a favored hypothesis can appear stronger if invalid supporting
      excerpts are accepted and ignored or contradictory evidence is discounted.
-   - IncidentIQ safeguard: mark invalid citations as `excerpt_mismatch`, keep
-     the validation status visible, and require human review not to treat them
-     as verified evidence.
+   - IncidentIQ safeguard: mark mismatched optional excerpts as
+     `excerpt_mismatch`, keep the validation status visible, and require human
+     review not to treat them as verified quotations.
 
 5. **Automation bias and false precision**
 
@@ -137,8 +141,9 @@ proven.
 ## Evaluation conclusion
 
 The comparison demonstrates why evidence validation and human review are both
-required. Validation prevented inaccurate quotations from silently becoming
-supporting or contradicting evidence. The adversarial critic added a meaningful
-secondary investigation without overstating that the stronger H-001 conclusion
-had changed. No secret, raw provider response, prompt, or unredacted evidence is
-included in this report.
+required. Validation kept inaccurate quotations from silently appearing as
+verified verbatim evidence: affected references retained a visible
+`excerpt_mismatch` status for human review. The adversarial critic added a
+meaningful secondary investigation without overstating that the stronger H-001
+conclusion had changed. No secret, raw provider response, prompt, or unredacted
+evidence is included in this report.
