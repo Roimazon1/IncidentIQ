@@ -140,9 +140,8 @@ GEMINI_MODEL=gemini-3.5-flash-lite
 Set `GEMINI_API_KEY` in that same untracked local file. The repository's current
 default Gemini model is `gemini-3.5-flash-lite`.
 
-Local runs read `GEMINI_API_KEY` from the untracked `.env` file. A hosted demo
-will inject the key as a server-side hosting secret; the key is never exposed
-in source code, GitHub, browser JavaScript, or documentation.
+Local runs read `GEMINI_API_KEY` only from the untracked `.env` file. The key is
+never exposed in source code, GitHub, browser JavaScript, or documentation.
 
 Before a Gemini request, IncidentIQ normalizes and redacts the evidence. The
 provider receives the redacted evidence manifest or the typed, reviewed report
@@ -239,6 +238,11 @@ views rather than raw JSON:
 - open questions with the evidence and resolution criteria needed;
 - safe provider, model, prompt-version, and validation audit metadata; and
 - a structured editable postmortem draft.
+
+See the
+[sanitized demo analysis output](docs/examples/demo-analysis-output.md) for a
+concise reviewer-facing example based on the synthetic incident and documented
+Gemini prompt comparison.
 
 Results depend on the selected provider. A hypothesis is not a confirmed root
 cause unless an investigator explicitly assigns the human confirmation status.
@@ -340,6 +344,5 @@ Run Ruff lint and formatting checks:
 
 ## Submission Artifacts
 
-- Hosted demo: **[Add final hosted-demo link]**
 - Demo video: **[Add final demo-video link]**
 - Reflective report: **[Submit the final reflective report separately]**
