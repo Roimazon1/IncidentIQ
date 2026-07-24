@@ -8,7 +8,11 @@ from pathlib import Path
 import pytest
 
 from app.models.enums import EvidenceType
-from app.schemas.ai_outputs import CompleteAnalysisOutputV1, SummaryOutputV1
+from app.schemas.ai_outputs import (
+    CompleteAnalysisOutputV1,
+    HypothesesOutputV1,
+    SummaryOutputV1,
+)
 from app.schemas.ai_provider import (
     AIFailureCategory,
     AIRequest,
@@ -78,6 +82,28 @@ def _summary_request() -> AIRequest:
     )
 
 
+def _hypotheses_request() -> AIRequest:
+    summary_request = _summary_request()
+    return summary_request.model_copy(
+        update={
+            "prompts": PromptBundle(
+                system=summary_request.prompts.system,
+                task=PromptReference(
+                    name=PromptName.HYPOTHESES,
+                    version=PromptVersion.V1,
+                ),
+            ),
+            "output_schema": OutputSchemaIdentifier.HYPOTHESES_V1,
+            "metadata": summary_request.metadata.model_copy(
+                update={
+                    "request_identifier": "req-hypotheses",
+                    "analysis_stage": AnalysisStage.HYPOTHESES,
+                }
+            ),
+        }
+    )
+
+
 def _provider(fixture_name: str) -> FakeAIProvider:
     registry = PromptRegistry()
     return FakeAIProvider.from_file(
@@ -116,6 +142,19 @@ def test_fake_provider_is_deterministic_and_returns_audited_typed_result() -> No
     assert first_result.audit.raw_response
     assert "audit" not in first_result.model_dump()
     assert "raw_response" not in first_result.model_dump_json()
+
+
+def test_fake_provider_uses_application_owned_hypothesis_ids() -> None:
+    provider = _provider("valid_hypotheses")
+
+    result = provider.generate(_hypotheses_request())
+
+    assert isinstance(result.output, HypothesesOutputV1)
+    assert [hypothesis.hypothesis_id for hypothesis in result.output.hypotheses] == [
+        "H-001",
+        "H-002",
+        "H-003",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -172,6 +211,7 @@ def test_fake_provider_exposes_safe_simulated_failures(
     assert error.details.request_identifier == "req-001"
     assert error.details.audit is not None
     assert error.details.audit.raw_response is None
+    assert error.validation_errors == ()
     assert "audit" not in repr(error)
 
 

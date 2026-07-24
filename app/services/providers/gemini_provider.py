@@ -24,6 +24,7 @@ from app.services.ai_provider import (
     PromptBundleValidator,
     PromptResolver,
     build_ai_result,
+    build_model_facing_output_schema,
     process_structured_response,
     raise_ai_provider_failure,
     resolve_request_prompts,
@@ -261,7 +262,7 @@ class GeminiAIProvider:
             "system_instruction": system_prompt,
             "response_mime_type": "application/json",
             "response_json_schema": _gemini_supported_schema(
-                output_model.model_json_schema()
+                build_model_facing_output_schema(output_model)
             ),
         }
 
@@ -320,8 +321,10 @@ class GeminiAIProvider:
                     continue
                 raise_ai_provider_failure(
                     request=request,
-                    category=AIFailureCategory.EXHAUSTED_RETRIES,
+                    category=outcome.failure_category,
                     attempt_count=attempt_count,
+                    retries_exhausted=True,
+                    validation_errors=outcome.validation_errors,
                     raw_response=raw_response,
                 )
 
@@ -439,11 +442,11 @@ class GeminiAIProvider:
         if retryable and self._retry_policy.has_next_attempt(attempt_count):
             self._sleep_before_retry(attempt_count)
             return
-        final_category = AIFailureCategory.EXHAUSTED_RETRIES if retryable else category
         raise_ai_provider_failure(
             request=request,
-            category=final_category,
+            category=category,
             attempt_count=attempt_count,
+            retries_exhausted=retryable,
         )
 
     def _sleep_before_retry(self, attempt_count: int) -> None:

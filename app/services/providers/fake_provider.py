@@ -185,6 +185,7 @@ class FakeAIProvider:
                 request=request,
                 category=outcome.failure_category,
                 attempt_count=1,
+                validation_errors=outcome.validation_errors,
                 raw_response=raw_response,
             )
 

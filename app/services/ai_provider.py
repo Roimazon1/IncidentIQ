@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable
+from copy import deepcopy
 from dataclasses import dataclass
 from enum import StrEnum
 from math import isfinite
@@ -15,6 +17,7 @@ from app.config import Settings
 from app.schemas.ai_outputs import (
     AIOutput,
     CriticOutputV1,
+    HypothesisV1,
     HypothesesOutputV1,
     OpenQuestionsOutputV1,
     PostmortemOutputV1,
@@ -35,6 +38,19 @@ from app.schemas.ai_provider import (
     PromptReference,
     SuccessAuditData,
 )
+from app.services.redaction_service import RedactionService
+
+
+ValidationLocationComponent = str | int
+
+
+@dataclass(frozen=True, slots=True)
+class AIValidationError:
+    """Sanitized internal details for one structured-output validation error."""
+
+    loc: tuple[ValidationLocationComponent, ...]
+    type: str
+    message: str
 
 
 class AIProviderName(StrEnum):
@@ -75,9 +91,27 @@ class AIProviderConfigurationError(ValueError):
 class AIProviderExecutionError(RuntimeError):
     """Safe provider-neutral failure with internal-only audit details."""
 
-    def __init__(self, details: AIFailureDetails) -> None:
+    def __init__(
+        self,
+        details: AIFailureDetails,
+        *,
+        retries_exhausted: bool = False,
+        validation_errors: tuple[AIValidationError, ...] = (),
+    ) -> None:
         self.details = details
+        self._retries_exhausted = retries_exhausted
+        self._validation_errors = validation_errors
         super().__init__(details.explanation)
+
+    @property
+    def retries_exhausted(self) -> bool:
+        """Return whether the safe underlying failure exhausted its retry budget."""
+        return self._retries_exhausted
+
+    @property
+    def validation_errors(self) -> tuple[AIValidationError, ...]:
+        """Return sanitized internal structured-output validation diagnostics."""
+        return self._validation_errors
 
     def __repr__(self) -> str:
         """Exclude provider responses and other internal audit fields."""
@@ -99,6 +133,7 @@ class StructuredResponseOutcome:
 
     output: AIOutput | None
     failure_category: AIFailureCategory | None
+    validation_errors: tuple[AIValidationError, ...] = ()
 
     def __post_init__(self) -> None:
         has_output = self.output is not None
@@ -106,6 +141,12 @@ class StructuredResponseOutcome:
         if has_output == has_failure:
             raise ValueError(
                 "structured response outcome requires one output or failure"
+            )
+        has_validation_errors = bool(self.validation_errors)
+        is_schema_failure = self.failure_category is AIFailureCategory.SCHEMA_VALIDATION
+        if has_validation_errors != is_schema_failure:
+            raise ValueError(
+                "validation diagnostics require a schema-validation failure"
             )
 
 
@@ -201,6 +242,38 @@ def select_output_model(request: AIRequest) -> type[AIOutput]:
     return output_model
 
 
+def build_model_facing_output_schema(
+    output_model: type[AIOutput],
+) -> dict[str, object]:
+    """Return a schema copy that excludes application-owned generated metadata."""
+    schema = deepcopy(output_model.model_json_schema())
+    if output_model is not HypothesesOutputV1:
+        return schema
+
+    definitions = schema.get("$defs")
+    if not isinstance(definitions, dict):
+        raise AIProviderConfigurationError(
+            "The hypotheses output schema is unavailable."
+        )
+    hypothesis_schema = definitions.get(HypothesisV1.__name__)
+    if not isinstance(hypothesis_schema, dict):
+        raise AIProviderConfigurationError("The hypothesis item schema is unavailable.")
+    properties = hypothesis_schema.get("properties")
+    required = hypothesis_schema.get("required")
+    if not isinstance(properties, dict) or not isinstance(required, list):
+        raise AIProviderConfigurationError(
+            "The hypothesis metadata schema is unavailable."
+        )
+
+    hypothesis_schema["properties"] = {
+        key: value for key, value in properties.items() if key != "hypothesis_id"
+    }
+    hypothesis_schema["required"] = [
+        field_name for field_name in required if field_name != "hypothesis_id"
+    ]
+    return schema
+
+
 def process_structured_response(
     raw_response: str | None,
     output_model: type[AIOutput],
@@ -218,17 +291,49 @@ def process_structured_response(
             output=None,
             failure_category=AIFailureCategory.MALFORMED_JSON,
         )
+    response_data = _assign_application_owned_hypothesis_ids(
+        response_data,
+        output_model,
+    )
     try:
         output = output_model.model_validate(response_data)
-    except ValidationError:
+    except ValidationError as error:
         return StructuredResponseOutcome(
             output=None,
             failure_category=AIFailureCategory.SCHEMA_VALIDATION,
+            validation_errors=_sanitize_validation_errors(error),
         )
     return StructuredResponseOutcome(
         output=output,
         failure_category=None,
     )
+
+
+def _assign_application_owned_hypothesis_ids(
+    response_data: object,
+    output_model: type[AIOutput],
+) -> object:
+    if output_model is not HypothesesOutputV1 or not isinstance(response_data, dict):
+        return response_data
+    hypotheses = response_data.get("hypotheses")
+    if not isinstance(hypotheses, list):
+        return response_data
+
+    normalized_hypotheses = []
+    for index, hypothesis in enumerate(hypotheses, start=1):
+        if not isinstance(hypothesis, dict):
+            normalized_hypotheses.append(hypothesis)
+            continue
+        normalized_hypotheses.append(
+            {
+                **hypothesis,
+                "hypothesis_id": f"H-{index:03d}",
+            }
+        )
+    return {
+        **response_data,
+        "hypotheses": normalized_hypotheses,
+    }
 
 
 def build_ai_result(
@@ -284,6 +389,8 @@ def raise_ai_provider_failure(
     request: AIRequest,
     category: AIFailureCategory,
     attempt_count: int,
+    retries_exhausted: bool = False,
+    validation_errors: tuple[AIValidationError, ...] = (),
     raw_response: str | None = None,
 ) -> Never:
     """Raise a sanitized provider-neutral failure with internal-only audit data."""
@@ -302,8 +409,51 @@ def raise_ai_provider_failure(
             request_identifier=request.metadata.request_identifier,
             explanation=explanation,
             audit=audit,
-        )
+        ),
+        retries_exhausted=retries_exhausted,
+        validation_errors=validation_errors,
     ) from None
+
+
+def _sanitize_validation_errors(
+    error: ValidationError,
+) -> tuple[AIValidationError, ...]:
+    return tuple(
+        AIValidationError(
+            loc=tuple(
+                _sanitize_validation_location(component) for component in item["loc"]
+            ),
+            type=_sanitize_validation_type(item["type"]),
+            message=_sanitize_validation_message(item["msg"]),
+        )
+        for item in error.errors(
+            include_url=False,
+            include_context=False,
+            include_input=False,
+        )
+    )
+
+
+def _sanitize_validation_location(
+    component: object,
+) -> ValidationLocationComponent:
+    if isinstance(component, int) and not isinstance(component, bool):
+        return component
+    text = RedactionService.redact_text(str(component)).redacted_text
+    return text if text.strip() else "[invalid-location]"
+
+
+def _sanitize_validation_type(value: object) -> str:
+    text = str(value)
+    if re.fullmatch(r"[a-z][a-z0-9_.-]{0,99}", text) is None:
+        return "validation_error"
+    return text
+
+
+def _sanitize_validation_message(value: object) -> str:
+    text = RedactionService.redact_text(str(value)).redacted_text
+    normalized = " ".join(text.split())
+    return normalized[:500] if normalized else "Structured output failed validation."
 
 
 def resolve_request_prompts(

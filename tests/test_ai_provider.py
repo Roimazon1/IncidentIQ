@@ -15,6 +15,8 @@ from app.services.ai_provider import (
     AIProviderConfigurationError,
     AIProviderFactory,
 )
+from app.services.analysis_service_factory import build_configured_ai_provider
+from app.services.providers.gemini_provider import GeminiAIProvider
 
 
 class _StubProvider:
@@ -79,6 +81,35 @@ def test_provider_factory_selects_gemini_with_complete_configuration() -> None:
 
     assert selected is provider
     assert received_settings == [settings]
+
+
+def test_configured_factory_registers_existing_gemini_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    injected_client = object()
+    received_api_keys: list[str | None] = []
+
+    def create_client(api_key: str | None) -> object:
+        received_api_keys.append(api_key)
+        return injected_client
+
+    monkeypatch.setattr(
+        GeminiAIProvider,
+        "_create_real_client",
+        staticmethod(create_client),
+    )
+
+    provider = build_configured_ai_provider(
+        _settings(
+            ai_provider="gemini",
+            gemini_api_key="test-gemini-key",
+            gemini_model="gemini-2.5-flash",
+        )
+    )
+
+    assert isinstance(provider, GeminiAIProvider)
+    assert provider.model_name == "gemini-2.5-flash"
+    assert received_api_keys == ["test-gemini-key"]
 
 
 @pytest.mark.parametrize(
