@@ -18,7 +18,7 @@ from app.schemas.evidence import EvidenceCode, LineRange
 
 
 class PromptComparisonVariantName(StrEnum):
-    """Allowlisted evaluation variants required by P10-03."""
+    """Allowlisted evaluation variants required by prompt comparison."""
 
     NEUTRAL_EVIDENCE_FIRST = "neutral_evidence_first"
     LEADING_DEPLOYMENT_V2_4_1 = "leading_deployment_v2_4_1"

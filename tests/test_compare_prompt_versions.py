@@ -1,4 +1,4 @@
-"""Focused deterministic tests for the P10-03 prompt comparison."""
+"""Focused deterministic tests for prompt comparison."""
 
 from pathlib import Path
 

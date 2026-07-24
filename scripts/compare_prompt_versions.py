@@ -79,7 +79,7 @@ def compare_prompt_versions(
     dataset_directory: Path = DEFAULT_DATASET_DIRECTORY,
     ai_provider: AIProvider | None = None,
 ) -> PromptComparisonResult:
-    """Run and return the three sanitized P10-03 comparison variants."""
+    """Run and return the three sanitized prompt comparison variants."""
     incident = _load_demo_incident(session, dataset_directory)
     provider = ai_provider or build_configured_ai_provider(settings)
     run_context = _EvaluationRunContext(
