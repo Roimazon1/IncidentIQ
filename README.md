@@ -11,6 +11,11 @@ recommended actions, and reasoning risks remain separate; citations are checked
 against the evidence supplied to that analysis run; uncertainty stays visible;
 and a human reviewer controls confirmation.
 
+## Submitted by
+
+- Roi Mazon — 211845045
+- Amnon Yaakov — 316158328
+
 ## Main Features
 
 - Create and edit incidents and retain their analysis history.
@@ -344,5 +349,4 @@ Run Ruff lint and formatting checks:
 
 ## Submission Artifacts
 
-- Demo video: **[Add final demo-video link]**
-- Reflective report: **[Submit the final reflective report separately]**
+- Demo video: [IncidentIQ Final Project Demo](https://drive.google.com/file/d/1vIHGKDH4E3a9aLq5klyE8-yiEuVV7LYo/view?usp=drive_link)
