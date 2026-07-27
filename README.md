@@ -13,8 +13,8 @@ and a human reviewer controls confirmation.
 
 ## Submitted by
 
-- Roi Mazon — 211845045
-- Amnon Yaakov — 316158328
+- Roi Mazon
+- Amnon Yaakov
 
 ## Main Features
 
