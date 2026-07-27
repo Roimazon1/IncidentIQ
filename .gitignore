@@ -31,5 +31,5 @@ uploads/
 .DS_Store
 Thumbs.db
 
-# Local agent instructions — intentionally not committed
+# Local agent instructions
 AGENTS.md
